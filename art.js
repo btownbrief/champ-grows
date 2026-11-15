@@ -36,119 +36,55 @@
   }
 
   // ------------------------------------------------------------------ water
-  let waterTile = null;
-  function buildWaterTile() {
-    const S = 256, c = document.createElement('canvas'); c.width = c.height = S;
-    const g = c.getContext('2d'), r = mulberry(7);
-    // soft blobs
-    for (let i = 0; i < 26; i++) {
-      const x = r() * S, y = r() * S, rad = 18 + r() * 40;
-      for (let ox = -S; ox <= S; ox += S) for (let oy = -S; oy <= S; oy += S) {
-        const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, rad);
-        gr.addColorStop(0, 'rgba(150,225,255,0.07)'); gr.addColorStop(1, 'rgba(150,225,255,0)');
-        g.fillStyle = gr; g.fillRect(x + ox - rad, y + oy - rad, rad * 2, rad * 2);
-      }
-    }
-    // light worms (caustics), tiled by wrap
-    for (let i = 0; i < 54; i++) {
-      const cx = r() * S, cy = r() * S, a = r() * TAU, len = 50 + r() * 110, amp = 5 + r() * 12, wl = 28 + r() * 40, ph = r() * TAU, w = 1.2 + r() * 2.2;
-      const pts = [];
-      for (let t = -len / 2; t <= len / 2; t += 6) {
-        const off = Math.sin(t / wl * TAU + ph) * amp;
-        pts.push([cx + Math.cos(a) * t - Math.sin(a) * off, cy + Math.sin(a) * t + Math.cos(a) * off]);
-      }
-      for (let ox = -S; ox <= S; ox += S) for (let oy = -S; oy <= S; oy += S) {
-        [[w * 3.4, 0.02], [w * 2, 0.035], [w, 0.07]].forEach((p) => {
-          g.lineWidth = p[0]; g.lineCap = 'round'; g.lineJoin = 'round'; g.strokeStyle = 'rgba(175,238,255,' + p[1] + ')';
-          g.beginPath(); pts.forEach((q, k) => k ? g.lineTo(q[0] + ox, q[1] + oy) : g.moveTo(q[0] + ox, q[1] + oy)); g.stroke();
-        });
-      }
-    }
-    waterTile = c; return c;
-  }
-
-  function tiled(ctx, tile, scale, ox, oy, W, H, alpha, comp) {
-    const ts = tile.width * scale;
-    let sx = -(((ox % ts) + ts) % ts), sy = -(((oy % ts) + ts) % ts);
-    ctx.save(); ctx.globalAlpha = alpha; if (comp) ctx.globalCompositeOperation = comp;
-    for (let y = sy; y < H; y += ts) for (let x = sx; x < W; x += ts) ctx.drawImage(tile, x, y, ts + 0.6, ts + 0.6);
-    ctx.restore();
-  }
-
-  // Lake moods: each mode gets its own time of day / weather so modes feel like different places.
+  // Lake moods. The time of day lives in the FRAME (shore, trees, HUD shade); the water itself only
+  // shifts inside a narrow blue-teal band and stays one calm colour, so nothing on the play field
+  // competes with Champ, the fish and the hazards.
   const MOODS = {
-    day:     { g: ['#0b5a86', '#0c6c9c', '#09507a'], a1: 0.7, a2: 0.45, sp: 1 },
-    morning: { g: ['#1689a4', '#20a0b8', '#11738f'], a1: 0.85, a2: 0.5, sp: 0.8, grade: 'rgba(255,226,160,0.55)', haze: 'rgba(255,250,225,0.10)' },
-    dusk:    { g: ['#1f3f7c', '#2c4282', '#182e60'], a1: 0.55, a2: 0.42, sp: 0.7, grade: 'rgba(255,110,170,0.55)', tint: 'rgba(40,20,80,0.10)' },
-    storm:   { g: ['#2b5568', '#33606f', '#203f52'], a1: 0.4, a2: 0.5, sp: 1.8, tint: 'rgba(20,32,44,0.22)', rain: true },
-    summer:  { g: ['#078aa6', '#0aa0b8', '#067693'], a1: 0.85, a2: 0.55, sp: 1.2, grade: 'rgba(255,250,200,0.35)' },
-    golden:  { g: ['#1f6a92', '#1f6a92', '#185478'], gs: [[0, '#e8a356'], [0.16, '#9c8a72'], [0.34, '#2a6f93'], [1, '#185478']], a1: 0.6, a2: 0.4, sp: 0.9, tint: 'rgba(255,170,80,0.06)', sunpath: true },
-    night:   { g: ['#0b2a50', '#0e3360', '#08203f'], a1: 0.5, a2: 0.35, sp: 0.6, tint: 'rgba(8,16,52,0.30)', stars: true, moon: true }
+    day:     { w: '#0d6a98' },
+    morning: { w: '#1583a0', grade: 'rgba(255,226,160,0.55)', haze: 'rgba(255,250,225,0.16)' },
+    golden:  { w: '#1a6f94', grade: 'rgba(255,150,50,0.9)', tint: 'rgba(255,140,40,0.2)' },
+    dusk:    { w: '#1c4f88', grade: 'rgba(255,110,170,0.6)', tint: 'rgba(40,20,80,0.22)' },
+    night:   { w: '#123a66', tint: 'rgba(6,12,40,0.50)' },
+    storm:   { w: '#2a5a70', tint: 'rgba(20,32,44,0.32)', rain: true },
+    summer:  { w: '#0f8fa8', grade: 'rgba(255,250,200,0.4)' }
   };
-  // colour grade over the whole scene (lake, shore and grass): soft-light for warm light, plain wash for gloom, rain for storms
+  const hexRgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  const shade = (h, k) => { const c = hexRgb(h); return 'rgb(' + c.map((v) => Math.round(clamp(k > 0 ? v + (255 - v) * k : v * (1 + k), 0, 255))).join(',') + ')'; };
+  // the shore with the mood's light baked in (built once per mood per layout, so it costs nothing per frame)
+  function shoreFor(L, moodId) {
+    const M = MOODS[moodId] || MOODS.day;
+    if (!M.grade && !M.tint && !M.haze) return L.shore;
+    L.shoreMood = L.shoreMood || {};
+    if (L.shoreMood.src !== L.shore) L.shoreMood = { src: L.shore };
+    if (L.shoreMood[moodId]) return L.shoreMood[moodId];
+    const c = document.createElement('canvas'); c.width = L.shore.width; c.height = L.shore.height;
+    const g = c.getContext('2d'); g.drawImage(L.shore, 0, 0); g.scale(L.dpr, L.dpr);
+    if (M.grade) { g.globalCompositeOperation = 'soft-light'; g.fillStyle = M.grade; g.fillRect(0, 0, L.W, L.H); }
+    g.globalCompositeOperation = 'source-over';
+    if (M.tint) { g.fillStyle = M.tint; g.fillRect(0, 0, L.W, L.H); }
+    if (M.haze) { const hg = g.createLinearGradient(0, 0, 0, L.H * 0.5); hg.addColorStop(0, M.haze); hg.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = hg; g.fillRect(0, 0, L.W, L.H * 0.5); }
+    g.globalCompositeOperation = 'destination-out'; g.fillStyle = '#000'; g.fill(L.lake);
+    L.shoreMood[moodId] = c; return c;
+  }
+  // weather over the frame only: storm rain falls on the shore and HUD band, never on the water
   function drawMood(ctx, L, t, moodId) {
-    const M = MOODS[moodId]; if (!M) return;
-    if (M.grade) { ctx.save(); ctx.globalCompositeOperation = 'soft-light'; ctx.fillStyle = M.grade; ctx.fillRect(-20, -20, L.W + 40, L.H + 40); ctx.restore(); }
-    if (M.glare) { ctx.save(); ctx.globalCompositeOperation = 'screen'; const gx = L.W * 0.8, gy = L.H * 0.12, gr = ctx.createRadialGradient(gx, gy, 0, gx, gy, Math.max(L.W, L.H) * 0.9); gr.addColorStop(0, M.glare); gr.addColorStop(0.5, 'rgba(255,140,60,0.18)'); gr.addColorStop(1, 'rgba(255,120,40,0)'); ctx.fillStyle = gr; ctx.fillRect(0, 0, L.W, L.H); ctx.restore(); }
-    if (M.tint) { ctx.fillStyle = M.tint; ctx.fillRect(-20, -20, L.W + 40, L.H + 40); }
-    if (M.haze) { const hg = ctx.createLinearGradient(0, 0, 0, L.H * 0.5); hg.addColorStop(0, M.haze); hg.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = hg; ctx.fillRect(0, 0, L.W, L.H * 0.5); }
-    if (M.sunpath) { // low sun: a column of warm glitter on the water and a soft glow on the far shore
-      ctx.save(); ctx.globalCompositeOperation = 'lighter';
-      const sx = L.gx + L.gw * 0.68;
-      ctx.fillStyle = 'rgba(255,190,90,0.8)';
-      for (let i = 0; i < 46; i++) { const u = (i * 0.618034) % 1, y = L.gy + u * L.gh, spread = L.cell * (0.6 + u * 2.4), x = sx + Math.sin(i * 12.9898) * spread, k = 0.5 + 0.5 * Math.sin(t * (2 + (i % 5)) + i); if (k < 0.35) continue; ctx.globalAlpha = (k - 0.35) * (1 - u * 0.5); ctx.fillRect(x - L.cell * 0.22 * k, y, L.cell * 0.44 * k, 1.6); }
-      ctx.restore();
-    }
-    if (M.moon) { // moon reflection: a pale glow and a few rippling streaks
-      ctx.save(); ctx.globalCompositeOperation = 'screen';
-      const mx = L.gx + L.gw * 0.3, my = L.gy + L.gh * 0.22, gl = ctx.createRadialGradient(mx, my, 0, mx, my, L.cell * 3.2);
-      gl.addColorStop(0, 'rgba(220,235,255,0.35)'); gl.addColorStop(1, 'rgba(200,220,255,0)'); ctx.fillStyle = gl; ctx.fillRect(mx - L.cell * 3.2, my - L.cell * 3.2, L.cell * 6.4, L.cell * 6.4);
-      ctx.fillStyle = 'rgba(235,242,255,0.7)';
-      for (let i = 0; i < 7; i++) { const w = L.cell * (1.3 - Math.abs(i - 3) * 0.28) * (0.8 + 0.2 * Math.sin(t * 2 + i)), y = my - L.cell * 0.9 + i * L.cell * 0.3; ctx.fillRect(mx - w / 2 + Math.sin(t * 1.5 + i) * 3, y, w, 1.8); }
-      ctx.restore();
-    }
-    if (M.rain) {
-      ctx.save(); ctx.strokeStyle = 'rgba(210,230,245,0.28)'; ctx.lineWidth = 1.2; ctx.beginPath();
-      for (let i = 0; i < 70; i++) { const sx = ((i * 97.3 + t * 160) % (L.W + 80)) - 40, sy = ((i * 211.7 + t * 620) % (L.H + 60)) - 30; ctx.moveTo(sx, sy); ctx.lineTo(sx - 5, sy + 15); }
-      ctx.stroke(); ctx.restore();
-    }
+    const M = MOODS[moodId]; if (!M || !M.rain) return;
+    if (!L.outside || L.outside.src !== L.lake) { const o = new Path2D(); o.rect(-40, -40, L.W + 80, L.H + 80); o.addPath(L.lake); L.outside = { p: o, src: L.lake }; }
+    ctx.save(); ctx.clip(L.outside.p, 'evenodd');
+    ctx.strokeStyle = 'rgba(210,230,245,0.30)'; ctx.lineWidth = 1.2; ctx.beginPath();
+    for (let i = 0; i < 70; i++) { const sx = ((i * 97.3 + t * 160) % (L.W + 80)) - 40, sy = ((i * 211.7 + t * 620) % (L.H + 60)) - 30; ctx.moveTo(sx, sy); ctx.lineTo(sx - 5, sy + 15); }
+    ctx.stroke(); ctx.restore();
   }
   let waterGrad = null, waterGradKey = '';
   function drawWater(ctx, L, t, moodId) {
     const M = MOODS[moodId] || MOODS.day, key = L.W + 'x' + L.H + (moodId || 'day');
     if (!waterGrad || waterGradKey !== key) {
-      waterGrad = ctx.createLinearGradient(0, 0, 0, L.H);
-      if (M.gs) { const y0 = L.gy, y1 = L.gy + L.gh; waterGrad = ctx.createLinearGradient(0, y0, 0, y1); M.gs.forEach(([k, c]) => waterGrad.addColorStop(k, c)); }
-      else { waterGrad.addColorStop(0, M.g[0]); waterGrad.addColorStop(0.5, M.g[1]); waterGrad.addColorStop(1, M.g[2]); }
+      // one flat colour with a gentle vertical gradient (top and bottom within ~6% lightness)
+      waterGrad = ctx.createLinearGradient(0, L.gy, 0, L.gy + L.gh);
+      waterGrad.addColorStop(0, shade(M.w, 0.04)); waterGrad.addColorStop(1, shade(M.w, -0.08));
       waterGradKey = key;
     }
     ctx.fillStyle = waterGrad; ctx.fillRect(0, 0, L.W, L.H);
-    if (!waterTile) buildWaterTile();
-    tiled(ctx, waterTile, 1.0, t * 9 * M.sp, t * 5 * M.sp, L.W, L.H, M.a1, 'screen');
-    tiled(ctx, waterTile, 1.7, -t * 7 * M.sp + 40, t * 4 * M.sp + 90, L.W, L.H, M.a2, 'screen');
-  }
-  function drawNightStars(ctx, L, t, glints) {
-    ctx.save(); ctx.fillStyle = '#fff6d0';
-    for (let i = 0; i < glints.length; i++) {
-      const g = glints[i], k = 0.5 + 0.5 * Math.sin(t * g.sp * 0.7 + g.ph), x = L.gx + g.x * L.gw, y = L.gy + g.y * L.gh;
-      ctx.globalAlpha = 0.25 + 0.55 * k; ctx.beginPath(); ctx.arc(x, y, 0.8 + k * 1.3, 0, TAU); ctx.fill();
-    }
-    ctx.restore();
-  }
-
-
-  // twinkling glints over the water
-  function drawGlints(ctx, L, t, glints) {
-    ctx.save(); ctx.fillStyle = '#fff';
-    for (let i = 0; i < glints.length; i++) {
-      const g = glints[i], k = Math.sin(t * g.sp + g.ph);
-      if (k < 0.82) continue;
-      const a = (k - 0.82) / 0.18, s = g.s * (0.5 + a);
-      ctx.globalAlpha = a * 0.85;
-      const x = L.gx + g.x * L.gw, y = L.gy + g.y * L.gh;
-      ctx.beginPath(); ctx.moveTo(x - s, y); ctx.quadraticCurveTo(x, y, x, y - s); ctx.quadraticCurveTo(x, y, x + s, y); ctx.quadraticCurveTo(x, y, x, y + s); ctx.quadraticCurveTo(x, y, x - s, y); ctx.fill();
-    }
-    ctx.restore();
   }
 
   // ------------------------------------------------------------------ lake outline + shore
@@ -299,92 +235,68 @@
     [[L.cell * 2.6, 0.05], [L.cell * 1.7, 0.07], [L.cell * 0.9, 0.09]].forEach((p) => {
       g.lineWidth = p[0]; g.strokeStyle = 'rgba(130,240,225,' + p[1] + ')'; g.stroke(L.lake);
     });
-    g.fillStyle = 'rgba(255,255,255,0.032)';
+    g.fillStyle = 'rgba(255,255,255,0.022)';
     for (let y = 0; y < L.rows; y++) for (let x = 0; x < L.cols; x++) if ((x + y) & 1) g.fillRect(L.gx + x * L.cell, L.gy + y * L.cell, L.cell, L.cell);
     g.restore();
     return c;
   }
 
   // ------------------------------------------------------------------ fish
-  function drawFish(ctx, x, y, len, ang, ph, tint) {
-    const a = asset('fish'); if (a) { drawAsset(ctx, a, x, y, ang, len / 0.75); return; }
-    ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
-    const L = len, sw = Math.sin(ph) * 0.45;
-    // glow so fish read against the water
-    const gl = ctx.createRadialGradient(0, 0, 0, 0, 0, L * 0.9); gl.addColorStop(0, 'rgba(255,255,255,0.22)'); gl.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(0, 0, L * 0.9, 0, TAU); ctx.fill();
+  // One clear silhouette, one colour: near-white body, coral tail, dark outline. `len` = nose to tail tip.
+  // flip = -1 mirrors it (faces left) without turning it upside down.
+  const FISH_INK = '#07384a';
+  function fishShape(ctx, L, body, tail, fin, ink, olw, extra) {
+    ctx.lineJoin = 'round';
     // tail
-    ctx.save(); ctx.translate(-L * 0.34, 0); ctx.rotate(sw);
-    ctx.fillStyle = tint ? '#ffb347' : '#ff8a5b'; ctx.strokeStyle = '#0a3a4e'; ctx.lineWidth = L * 0.06; ctx.lineJoin = 'round';
-    ctx.beginPath(); ctx.moveTo(L * 0.06, 0); ctx.lineTo(-L * 0.3, -L * 0.24); ctx.quadraticCurveTo(-L * 0.2, 0, -L * 0.3, L * 0.24); ctx.closePath(); ctx.fill(); ctx.stroke();
-    ctx.restore();
+    ctx.beginPath(); ctx.moveTo(-L * 0.2, 0); ctx.lineTo(-L * 0.5, -L * 0.24); ctx.quadraticCurveTo(-L * 0.4, 0, -L * 0.5, L * 0.24); ctx.closePath();
+    ctx.fillStyle = tail; ctx.fill(); ctx.strokeStyle = ink; ctx.lineWidth = olw; ctx.stroke();
+    // dorsal fin
+    ctx.beginPath(); ctx.moveTo(-L * 0.12, -L * 0.2); ctx.quadraticCurveTo(L * 0.0, -L * 0.42, L * 0.16, -L * 0.22); ctx.closePath();
+    ctx.fillStyle = fin; ctx.fill(); ctx.stroke();
     // body
-    const bg = ctx.createLinearGradient(0, -L * 0.25, 0, L * 0.25);
-    bg.addColorStop(0, tint ? '#fff4d0' : '#f4fbff'); bg.addColorStop(0.55, tint ? '#e8c37a' : '#a9d7f0'); bg.addColorStop(1, tint ? '#b98a38' : '#5f9fc8');
-    ctx.fillStyle = bg; ctx.beginPath(); ctx.ellipse(0, 0, L * 0.42, L * 0.24, 0, 0, TAU); ctx.fill();
-    ctx.strokeStyle = '#0a3a4e'; ctx.lineWidth = L * 0.06; ctx.stroke();
-    // fin + gill + eye
-    ctx.fillStyle = '#ff8a5b'; ctx.beginPath(); ctx.moveTo(-L * 0.04, -L * 0.2); ctx.quadraticCurveTo(L * 0.06, -L * 0.42, L * 0.14, -L * 0.2); ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = 'rgba(10,58,78,0.45)'; ctx.lineWidth = L * 0.04; ctx.beginPath(); ctx.arc(L * 0.12, 0, L * 0.17, -1.0, 1.0); ctx.stroke();
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(L * 0.27, -L * 0.06, L * 0.07, 0, TAU); ctx.fill();
-    ctx.fillStyle = '#0a2433'; ctx.beginPath(); ctx.arc(L * 0.285, -L * 0.06, L * 0.04, 0, TAU); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.beginPath(); ctx.ellipse(-L * 0.05, -L * 0.1, L * 0.18, L * 0.04, -0.1, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(L * 0.1, 0, L * 0.36, L * 0.27, 0, 0, TAU);
+    ctx.fillStyle = body; ctx.fill(); ctx.stroke();
+    if (extra) extra();
+    // gill + eye
+    ctx.strokeStyle = 'rgba(7,56,74,0.45)'; ctx.lineWidth = Math.max(1, olw * 0.6); ctx.beginPath(); ctx.arc(L * 0.2, 0, L * 0.15, -1.0, 1.0); ctx.stroke();
+    ctx.fillStyle = ink; ctx.beginPath(); ctx.arc(L * 0.32, -L * 0.06, L * 0.055, 0, TAU); ctx.fill();
+  }
+  function drawFish(ctx, x, y, len, ang, flip) {
+    const a = asset('fish'); if (a) { drawAsset(ctx, a, x, y, ang, len / 0.75); return; }
+    ctx.save(); ctx.translate(x, y); ctx.rotate(ang || 0); if (flip < 0) ctx.scale(-1, 1);
+    fishShape(ctx, len, '#f4fbff', '#ff7a59', '#ff7a59', FISH_INK, 2);
     ctx.restore();
   }
 
-  function drawPerch(ctx, x, y, len, ang, ph, frac, t) {
-    // aura + timer ring first (unrotated)
-    const pulse = 0.5 + 0.5 * Math.sin(t * 6);
-    const aura = ctx.createRadialGradient(x, y, 0, x, y, len * 1.15);
-    aura.addColorStop(0, 'rgba(255,225,110,' + (0.45 + 0.2 * pulse) + ')'); aura.addColorStop(1, 'rgba(255,200,60,0)');
-    ctx.fillStyle = aura; ctx.beginPath(); ctx.arc(x, y, len * 1.15, 0, TAU); ctx.fill();
-    // timer ring: shrinks clockwise; urgent colours near the end
+  // Golden perch: bigger, saturated gold, same dark outline; the ring around it is its timer.
+  function drawPerch(ctx, x, y, len, ang, flip, frac, t) {
+    const R = len * 0.6;
     const urgent = frac < 0.3, blink = urgent && Math.sin(t * 18) > 0;
     ctx.save(); ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(0,25,40,0.5)'; ctx.lineWidth = len * 0.2; ctx.beginPath(); ctx.arc(x, y, len * 0.82, 0, TAU); ctx.stroke();
-    ctx.strokeStyle = blink ? '#ffffff' : (urgent ? '#ff6a4d' : '#ffd24a'); ctx.lineWidth = len * 0.13;
-    ctx.beginPath(); ctx.arc(x, y, len * 0.82, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(frac, 0, 1)); ctx.stroke();
+    ctx.strokeStyle = 'rgba(0,25,40,0.45)'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(x, y, R, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = blink ? '#ffffff' : (urgent ? '#ff6a4d' : '#ffd02e'); ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(x, y, R, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(frac, 0, 1)); ctx.stroke();
     ctx.restore();
     const A = asset('perch'); if (A) { drawAsset(ctx, A, x, y, ang, len); return; }
-    ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
-    const L = len * 0.9, sw = Math.sin(ph) * 0.4;
-    ctx.save(); ctx.translate(-L * 0.34, 0); ctx.rotate(sw);
-    ctx.fillStyle = '#ff9e2c'; ctx.strokeStyle = '#6a3300'; ctx.lineWidth = L * 0.06; ctx.lineJoin = 'round';
-    ctx.beginPath(); ctx.moveTo(L * 0.06, 0); ctx.lineTo(-L * 0.32, -L * 0.28); ctx.quadraticCurveTo(-L * 0.2, 0, -L * 0.32, L * 0.28); ctx.closePath(); ctx.fill(); ctx.stroke();
-    ctx.restore();
-    const bg = ctx.createLinearGradient(0, -L * 0.28, 0, L * 0.28);
-    bg.addColorStop(0, '#fff0a0'); bg.addColorStop(0.5, '#ffc83a'); bg.addColorStop(1, '#e08a14');
-    ctx.fillStyle = bg; ctx.beginPath(); ctx.ellipse(0, 0, L * 0.45, L * 0.27, 0, 0, TAU); ctx.fill();
-    ctx.strokeStyle = '#6a3300'; ctx.lineWidth = L * 0.06; ctx.stroke();
-    ctx.save(); ctx.clip();
-    ctx.fillStyle = 'rgba(160,80,0,0.35)'; for (let i = -1; i <= 2; i++) ctx.fillRect(-L * 0.18 + i * L * 0.15, -L * 0.3, L * 0.07, L * 0.6);
-    ctx.restore();
-    // spiny dorsal
-    ctx.fillStyle = '#ff7a2c'; ctx.beginPath(); ctx.moveTo(-L * 0.18, -L * 0.24);
-    for (let i = 0; i < 4; i++) { ctx.lineTo(-L * 0.12 + i * L * 0.1, -L * 0.45); ctx.lineTo(-L * 0.06 + i * L * 0.1, -L * 0.25); }
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(L * 0.28, -L * 0.07, L * 0.075, 0, TAU); ctx.fill();
-    ctx.fillStyle = '#2a1500'; ctx.beginPath(); ctx.arc(L * 0.295, -L * 0.07, L * 0.045, 0, TAU); ctx.fill();
-    ctx.restore();
-    // sparkles
-    ctx.save(); ctx.fillStyle = '#fff';
-    for (let i = 0; i < 3; i++) {
-      const k = (t * 1.4 + i / 3) % 1, a = i * 2.1 + t, rr = len * (0.5 + k * 0.5);
-      ctx.globalAlpha = (1 - k) * 0.9; const sx = x + Math.cos(a) * rr, sy = y + Math.sin(a) * rr, s = len * 0.09 * (1 - k * 0.5);
-      ctx.beginPath(); ctx.moveTo(sx - s, sy); ctx.lineTo(sx, sy - s * 1.8); ctx.lineTo(sx + s, sy); ctx.lineTo(sx, sy + s * 1.8); ctx.closePath(); ctx.fill();
-    }
+    ctx.save(); ctx.translate(x, y); ctx.rotate(ang || 0); if (flip < 0) ctx.scale(-1, 1);
+    const L = len * 0.92;
+    fishShape(ctx, L, '#ffd02e', '#ff9a1f', '#ff9a1f', FISH_INK, 2, () => {
+      ctx.save(); ctx.clip(); ctx.fillStyle = 'rgba(150,80,0,0.28)';
+      for (let i = 0; i < 3; i++) ctx.fillRect(-L * 0.1 + i * L * 0.13, -L * 0.3, L * 0.06, L * 0.6);
+      ctx.fillStyle = 'rgba(255,255,230,0.55)'; ctx.beginPath(); ctx.ellipse(L * 0.06, -L * 0.12, L * 0.18, L * 0.05, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    });
     ctx.restore();
   }
 
   // a little tree / bush on a Daily Lake islet (seen from above)
   function drawIsleTree(ctx, x, y, cell, seed, k) {
     if (k <= 0) return;
-    const r = mulberry(seed * 131 + 7), rad = cell * (0.3 + r() * 0.08) * k, kind = Math.floor(r() * 4);
-    const pals = [['#2f6d36', '#3f8a44', '#5aa75a'], ['#b4501f', '#d96f26', '#f0a03a'], ['#2a6340', '#38815a', '#52a373'], ['#a8322a', '#cf4a35', '#ee7b4d']][kind];
-    ctx.fillStyle = 'rgba(0,30,20,0.3)'; ctx.beginPath(); ctx.ellipse(x + rad * 0.35, y + rad * 0.45, rad, rad * 0.85, 0, 0, TAU); ctx.fill();
-    ctx.fillStyle = pals[0]; ctx.beginPath(); ctx.arc(x, y, rad, 0, TAU); ctx.fill();
-    for (let i = 0; i < 4; i++) { const a = r() * TAU, d = rad * (0.2 + r() * 0.3); ctx.fillStyle = i % 2 ? pals[1] : pals[2]; ctx.beginPath(); ctx.arc(x + Math.cos(a) * d - rad * 0.12, y + Math.sin(a) * d - rad * 0.14, rad * (0.42 + r() * 0.18), 0, TAU); ctx.fill(); }
-    ctx.fillStyle = 'rgba(255,255,220,0.25)'; ctx.beginPath(); ctx.arc(x - rad * 0.3, y - rad * 0.34, rad * 0.3, 0, TAU); ctx.fill();
+    const r = mulberry(seed * 131 + 7), rad = cell * (0.27 + r() * 0.06) * k, rot = r() * TAU;
+    ctx.fillStyle = 'rgba(0,30,20,0.32)'; ctx.beginPath(); ctx.ellipse(x + rad * 0.3, y + rad * 0.4, rad, rad * 0.85, 0, 0, TAU); ctx.fill();
+    // a pine seen from above: a dark spiky star with a darker heart
+    const spiky = (rr, col) => { ctx.fillStyle = col; ctx.beginPath(); for (let i = 0; i < 16; i++) { const a = rot + i * TAU / 16, d = i % 2 ? rr * 0.68 : rr; ctx.lineTo(x + Math.cos(a) * d, y + Math.sin(a) * d); } ctx.closePath(); ctx.fill(); };
+    spiky(rad, '#1d4a34'); spiky(rad * 0.66, '#2b6446'); ctx.fillStyle = '#163a29'; ctx.beginPath(); ctx.arc(x, y, rad * 0.18, 0, TAU); ctx.fill();
   }
 
   // ------------------------------------------------------------------ rocks, whirlpools
@@ -429,7 +341,9 @@
       ctx.strokeStyle = col[0]; ctx.globalAlpha = a * 0.85; ctx.lineWidth = R * 0.15; ctx.stroke();
       ctx.strokeStyle = col[1]; ctx.globalAlpha = a * 0.6; ctx.lineWidth = R * 0.3; ctx.stroke();
     }
-    ctx.globalAlpha = a; ctx.strokeStyle = col[0]; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, R * (0.96 + 0.03 * Math.sin(t * 4)), 0, TAU); ctx.stroke();
+    const rim = R * (0.96 + 0.03 * Math.sin(t * 4));
+    ctx.globalAlpha = a; ctx.strokeStyle = 'rgba(2,20,40,0.6)'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(0, 0, rim, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5; ctx.stroke();
     ctx.restore();
   }
 
@@ -473,7 +387,7 @@
 
   function drawPaddler(ctx, x, y, ang, cell, t, v) {
     const A = asset('paddler'); if (A) { drawAsset(ctx, A, x, y, ang, cell); return; }
-    const c = cell, cols = [['#ffd24a', '#ff7a59'], ['#7be06a', '#2f9e5b'], ['#ff9ab0', '#c0386b']], bc = cols[v % 3];
+    const c = cell, bc = ['#ffffff', '#d4dde3'];
     ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
     ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 2; ctx.lineCap = 'round';
     for (let k = 0; k < 2; k++) { const o = (k + (t * 1.2) % 1) * c * 0.7; ctx.globalAlpha = 0.5 - k * 0.2; ctx.beginPath(); ctx.moveTo(-c * 0.95 - o, -c * 0.22 - o * 0.2); ctx.lineTo(-c * 0.7 - o, 0); ctx.lineTo(-c * 0.95 - o, c * 0.22 + o * 0.2); ctx.stroke(); }
@@ -483,7 +397,7 @@
     ctx.beginPath(); ctx.moveTo(c * 1.05, 0); ctx.bezierCurveTo(c * 0.7, -c * 0.3, -c * 0.7, -c * 0.3, -c * 0.95, -c * 0.2); ctx.lineTo(-c * 0.95, c * 0.2); ctx.bezierCurveTo(-c * 0.7, c * 0.3, c * 0.7, c * 0.3, c * 1.05, 0); ctx.closePath();
     const g = ctx.createLinearGradient(0, -c * 0.3, 0, c * 0.3); g.addColorStop(0, bc[0]); g.addColorStop(1, bc[1]);
     ctx.fillStyle = g; ctx.fill(); ctx.strokeStyle = '#1d3340'; ctx.lineWidth = Math.max(2, c * 0.06); ctx.lineJoin = 'round'; ctx.stroke();
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = c * 0.05; ctx.beginPath(); ctx.moveTo(c * 0.8, 0); ctx.lineTo(-c * 0.8, 0); ctx.stroke();
+    ctx.strokeStyle = '#e0402f'; ctx.lineWidth = c * 0.1; ctx.beginPath(); ctx.moveTo(c * 0.85, 0); ctx.lineTo(-c * 0.8, 0); ctx.stroke();
     // paddle swinging side to side
     const sw = Math.sin(t * 3.4), px = sw * c * 0.35;
     ctx.strokeStyle = '#3a2a1a'; ctx.lineWidth = c * 0.05; ctx.beginPath(); ctx.moveTo(px - c * 0.3 * Math.sign(sw || 1), -c * 0.46); ctx.lineTo(px + c * 0.3 * Math.sign(sw || 1), c * 0.46); ctx.stroke();
@@ -532,14 +446,24 @@
   }
 
   // ---- Champ's looks. Unlockable in game ("Champ grows"); every skin is a palette for the same creature.
-  const SKINS = {
-    lake:   { name: 'Lake Green', head: [150, 232, 96], mid: [62, 190, 110], tail: [36, 140, 126], shade: [22, 112, 92], light: [232, 255, 196], spot: [34, 140, 96], crest: '#ff7a59', crestD: '#b8402a', fin: ['#ffb08a', '#ff7a59'], hg: ['#d8ff9c', '#8fe36a', '#3fb56e'], cheek: 'rgba(255,110,130,0.42)' },
-    maple:  { name: 'Maple', head: [255, 196, 96], mid: [238, 116, 52], tail: [178, 56, 42], shade: [140, 42, 30], light: [255, 236, 186], spot: [196, 70, 40], crest: '#ffd24a', crestD: '#a8761a', fin: ['#ffe58a', '#f2b22c'], hg: ['#fff1b8', '#ffb04d', '#e0632e'], cheek: 'rgba(255,90,90,0.4)' },
-    ice:    { name: 'Ice-Out', head: [226, 247, 255], mid: [156, 210, 242], tail: [96, 156, 214], shade: [74, 124, 184], light: [255, 255, 255], spot: [118, 178, 226], crest: '#3a6fd8', crestD: '#1d3f8a', fin: ['#a9cdff', '#5b8ee8'], hg: ['#ffffff', '#cdeeff', '#86bfe8'], cheek: 'rgba(255,140,170,0.45)' },
-    sunset: { name: 'Sunset', head: [255, 176, 204], mid: [206, 112, 204], tail: [112, 82, 192], shade: [86, 50, 150], light: [255, 232, 242], spot: [160, 80, 180], crest: '#3fe0c5', crestD: '#14806f', fin: ['#a8fbe9', '#3fd8bd'], hg: ['#ffe0ec', '#ff9cc4', '#c06ac8'], cheek: 'rgba(255,90,140,0.42)' },
-    night:  { name: 'Midnight', head: [120, 140, 225], mid: [70, 86, 182], tail: [40, 52, 130], shade: [20, 28, 80], light: [170, 196, 255], spot: [110, 246, 255], glow: true, crest: '#8ff7ff', crestD: '#2a8aa8', fin: ['#c4fbff', '#5fd6ee'], hg: ['#a9bbff', '#5a6ed0', '#2a347e'], cheek: 'rgba(160,200,255,0.35)' },
-    gold:   { name: 'Golden', head: [255, 242, 156], mid: [255, 206, 64], tail: [222, 150, 30], shade: [168, 100, 14], light: [255, 255, 226], spot: [236, 168, 40], crest: '#ff7a59', crestD: '#a33a20', fin: ['#fff6c8', '#ffd24a'], hg: ['#fffbe0', '#ffe066', '#e0a020'], cheek: 'rgba(255,120,90,0.4)', sparkle: true }
+  // Every look follows one rule: the head is clearly lighter and warmer than the body (>= 20% in
+  // luminance), so on any water the head is the brightest large shape and you can find yourself at once.
+  const SKIN_BASE = {
+    lake:   { name: 'Lake Green', head: [182, 240, 106], body: [63, 174, 74],  crest: '#ff7a59', fin: ['#ffb08a', '#ff7a59'], cheek: 'rgba(255,110,130,0.42)' },
+    maple:  { name: 'Maple',      head: [255, 214, 120], body: [222, 104, 44], crest: '#ffd24a', fin: ['#ffe58a', '#f2b22c'], cheek: 'rgba(255,90,90,0.4)' },
+    ice:    { name: 'Ice-Out',    head: [191, 234, 245], body: [122, 184, 230], crest: '#3a6fd8', fin: ['#a9cdff', '#5b8ee8'], cheek: 'rgba(255,140,170,0.45)' },
+    sunset: { name: 'Sunset',     head: [255, 198, 222], body: [192, 98, 198], crest: '#3fe0c5', fin: ['#a8fbe9', '#3fd8bd'], cheek: 'rgba(255,90,140,0.42)' },
+    night:  { name: 'Midnight',   head: [172, 190, 255], body: [84, 104, 214], crest: '#8ff7ff', fin: ['#c4fbff', '#5fd6ee'], cheek: 'rgba(160,200,255,0.35)' },
+    gold:   { name: 'Golden',     head: [255, 246, 180], body: [224, 138, 26], crest: '#ff7a59', fin: ['#ffe2b0', '#f0a040'], cheek: 'rgba(255,120,90,0.4)' }
   };
+  const SKINS = {};
+  Object.keys(SKIN_BASE).forEach((k) => {
+    const b = SKIN_BASE[k], lift = (c, t) => c.map((v) => v + (255 - v) * t), dim = (c, t) => c.map((v) => v * (1 - t));
+    SKINS[k] = Object.assign({}, b, {
+      shade: dim(b.body, 0.32), light: lift(b.body, 0.45),
+      hg: ['rgb(' + lift(b.head, 0.45).map(Math.round) + ')', 'rgb(' + b.head.join(',') + ')', 'rgb(' + dim(b.head, 0.12).map(Math.round) + ')']
+    });
+  });
   const OUTLINE = '#07384a';
   const rgb = (a) => 'rgb(' + (a[0] | 0) + ',' + (a[1] | 0) + ',' + (a[2] | 0) + ')';
   const mixa = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
@@ -576,138 +500,89 @@
     });
     const n = samples.length; if (!n) return;
     const total = samples[n - 1].s;
-    // 2. tangents (pointing head -> tail) + a gentle swimming undulation
+    // 2. tangents (pointing head -> tail) + a gentle swimming undulation (small, so coils keep their gap)
     const T = S.time;
     for (let i = 0; i < n; i++) {
       const a = samples[Math.max(0, i - 1)], b = samples[Math.min(n - 1, i + 1)];
       let tx = b.x - a.x, ty = b.y - a.y; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
       const p = samples[i]; p.tx = tx; p.ty = ty;
       const ramp = Math.min(1, p.s / 2.2);
-      let w = Math.sin(p.s * 1.15 - T * 5.2) * cell * 0.045 * ramp;
+      let w = Math.sin(p.s * 1.15 - T * 5.2) * cell * 0.025 * ramp;
       if (S.dead) w += Math.sin(p.s * 2.4 - T * 24) * cell * 0.3 * (S.deadAmp || 0) * Math.min(1, p.s / 1.5 + 0.2);
       p.x += -ty * w; p.y += tx * w;
     }
-    // 3. radius: slim neck behind the head, full body, long tapering tail; fish bulges travel down
-    const base = cell * 0.45, tl = Math.min(7.5, Math.max(2, total * 0.72));
+    // 3. radius: one constant width (0.72 cell outside the outline, so a strip of water always shows
+    //    between parallel coils), tapering over the last 3 cells (only the last 1.5 on a short Champ, so
+    //    the neck stays full width); fish bulges travel down the body
+    const ow = Math.max(2.5, cell * 0.1), R = cell * 0.36 - ow, taper = Math.min(clamp(1.5 + (total - 6) * 0.75, 1.5, 3), total * 0.5);
     for (let i = 0; i < n; i++) {
       const p = samples[i];
-      const f = clamp((total - p.s) / tl, 0, 1);
-      let r = base * (0.24 + 0.76 * Math.pow(f, 0.6));
-      const neck = Math.exp(-Math.pow((p.s - 0.75) / 0.42, 2)); r *= 1 - 0.18 * neck;
-      // humps: the back arches out of the lake every ~3 cells, rolling slowly toward the tail
-      const hw = p.s > 1.7 && p.s < total - 1.2 ? Math.pow(Math.max(0, Math.sin((p.s - T * 0.55) * 2.0)), 3) * clamp((p.s - 1.7) / 0.8, 0, 1) * clamp((total - 1.2 - p.s) / 1.2, 0, 1) : 0;
-      p.hump = S.dead ? 0 : hw; r *= 1 + 0.2 * p.hump;
+      const f = clamp((total - p.s) / taper, 0, 1);
+      const r = R * (0.32 + 0.68 * Math.pow(f, 0.7));
       p.r0 = r;
       let bump = 0;
-      for (let k = 0; k < S.bulges.length; k++) { const d = (p.s - S.bulges[k]) / 0.62; bump += Math.exp(-d * d); }
-      p.bump = Math.min(1, bump); r += cell * 0.17 * Math.min(1.1, bump);
-      p.r = r;
+      // a meal swells the body behind the head and shrinks as it is digested on its way to the tail
+      for (let k = 0; k < S.bulges.length; k++) { const b = S.bulges[k], d = (p.s - b) / 0.62; bump += Math.exp(-d * d) * clamp(1 - (b - 2) / 9, 0.2, 1); }
+      p.bump = Math.min(1, bump);
+      p.r = r + cell * 0.14 * Math.min(1.1, bump);
     }
-    const colOf = (p) => { const u = Math.round(clamp(p.s / Math.max(6, total), 0, 1) * 28) / 28; return u < 0.5 ? mixa(P.head, P.mid, u * 2) : mixa(P.mid, P.tail, (u - 0.5) * 2); };
+    const body = P.body;
     ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    const ow = Math.max(2, cell * 0.09);
     // 4a. soft shadow on the lake bed (single paths per width bucket so it never stacks into dots)
     if (!S.noShadow) {
-      const sx = cell * 0.12, sy = cell * 0.2, buckets = new Map();
+      const sx = cell * 0.08, sy = cell * 0.14, buckets = new Map();
       for (let i = 1; i < n; i++) {
         const a = samples[i - 1], b = samples[i]; if (b.brk) continue;
-        const w = Math.round((a.r0 + b.r0) / (base * 0.3)) * base * 0.3;
+        const w = Math.round((a.r0 + b.r0 + ow * 2) / 3) * 3;
         let pth = buckets.get(w); if (!pth) { pth = new Path2D(); buckets.set(w, pth); }
         pth.moveTo(a.x + sx, a.y + sy); pth.lineTo(b.x + sx, b.y + sy);
       }
-      ctx.strokeStyle = 'rgba(0,26,46,0.24)';
-      buckets.forEach((pth, w) => { ctx.lineWidth = w * 1.02; ctx.stroke(pth); });
-      const hs = new Path2D();
-      for (let i = 1; i < n; i += 2) { const p = samples[i]; if (p.hump > 0.55) { hs.moveTo(p.x + cell * 0.3 + p.r * 0.9, p.y + cell * 0.38); hs.arc(p.x + cell * 0.3, p.y + cell * 0.38, p.r * 0.9, 0, TAU); } }
-      ctx.fillStyle = 'rgba(0,26,46,0.06)'; ctx.fill(hs);
+      ctx.strokeStyle = 'rgba(0,26,46,0.22)';
+      buckets.forEach((pth, w) => { ctx.lineWidth = w; ctx.stroke(pth); });
     }
-    // 4b. flippers (front pair behind the neck, rear pair before the tail) — under the body
-    const flips = [];
-    const fFront = 1.35, fRear = total - Math.max(1.7, tl * 0.42);
-    if (total > 2.4) flips.push({ s: fFront, big: 1, ph: 0 });
-    if (fRear > fFront + 1.6) flips.push({ s: fRear, big: 0.8, ph: Math.PI });
-    for (const fl of flips) {
-      let k = 0; while (k < n - 1 && samples[k].s < fl.s) k++;
-      const p = samples[k]; if (p.brk && k > 0) continue;
-      for (const sd of [-1, 1]) {
+    // 4b. one pair of flippers at the neck (under the body)
+    if (total > 2.4) {
+      let k = 0; while (k < n - 1 && samples[k].s < 1.3) k++;
+      const p = samples[k];
+      if (!(p.brk && k > 0)) for (const sd of [-1, 1]) {
         const nx = -p.ty * sd, ny = p.tx * sd; // outward normal
-        const paddle = S.dead ? 0 : Math.sin(T * 6.5 + fl.ph) * 0.42;
+        const paddle = S.dead ? 0 : Math.sin(T * 6.5) * 0.42;
         const ang = Math.atan2(ny * 0.86 + p.ty * 0.52, nx * 0.86 + p.tx * 0.52) + sd * paddle * 0.7;
-        const L = cell * 0.82 * fl.big, W = cell * 0.36 * fl.big;
-        const bx = p.x + nx * p.r0 * 0.55, by = p.y + ny * p.r0 * 0.55;
-        ctx.save(); ctx.translate(bx, by); ctx.rotate(ang);
-        const shape = () => { ctx.beginPath(); ctx.moveTo(0, -W * 0.5); ctx.quadraticCurveTo(L * 0.55, -W * 1.0, L, -W * 0.05); ctx.quadraticCurveTo(L * 0.62, W * 0.75, 0, W * 0.5); ctx.closePath(); };
-        if (!S.noShadow) { ctx.save(); ctx.rotate(-ang); ctx.translate(cell * 0.1, cell * 0.17); ctx.rotate(ang); shape(); ctx.fillStyle = 'rgba(0,26,46,0.22)'; ctx.fill(); ctx.restore(); }
-        shape();
-        const fg = ctx.createLinearGradient(0, 0, L, 0); fg.addColorStop(0, P.fin[1]); fg.addColorStop(1, P.fin[0]);
-        ctx.fillStyle = fg; ctx.fill(); ctx.strokeStyle = OUTLINE; ctx.lineWidth = ow * 0.85; ctx.stroke();
-        ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.lineWidth = Math.max(1, cell * 0.035);
-        ctx.beginPath(); ctx.moveTo(L * 0.18, -W * 0.12); ctx.quadraticCurveTo(L * 0.55, -W * 0.45, L * 0.82, -W * 0.1); ctx.stroke();
+        const Lf = cell * 0.62, W = cell * 0.3;
+        ctx.save(); ctx.translate(p.x + nx * p.r0 * 0.6, p.y + ny * p.r0 * 0.6); ctx.rotate(ang);
+        ctx.beginPath(); ctx.moveTo(0, -W * 0.5); ctx.quadraticCurveTo(Lf * 0.55, -W * 1.0, Lf, -W * 0.05); ctx.quadraticCurveTo(Lf * 0.62, W * 0.75, 0, W * 0.5); ctx.closePath();
+        const fg = ctx.createLinearGradient(0, 0, Lf, 0); fg.addColorStop(0, P.fin[1]); fg.addColorStop(1, P.fin[0]);
+        ctx.fillStyle = fg; ctx.fill(); ctx.strokeStyle = OUTLINE; ctx.lineWidth = ow * 0.8; ctx.stroke();
         ctx.restore();
       }
     }
     // 4c. outline (segments batched into runs of equal width: far fewer draw calls on long bodies)
     strokeRuns(ctx, samples, n, 0, 0, (a, b) => Math.round((a.r + b.r) + ow * 2), () => OUTLINE);
     for (let i = 0; i < n; i++) { const b = samples[i]; const nextBrk = i === n - 1 || samples[i + 1].brk; if (b.brk && nextBrk) { ctx.fillStyle = OUTLINE; ctx.beginPath(); ctx.arc(b.x, b.y, b.r + ow, 0, TAU); ctx.fill(); } }
-    // 4d. rounded body: shade (lower right) -> base -> light (upper left), all opaque so coils never stack
-    const passes = [[0, 0, 1.0, 'shade'], [-0.1, -0.14, 0.8, 'base'], [-0.2, -0.3, 0.46, 'light']];
-    for (const [ox, oy, wk, kind] of passes) {
-      strokeRuns(ctx, samples, n, ox, oy, (a, b) => Math.round((a.r + b.r) * wk), (b) => {
-        const c0 = colOf(b);
-        return rgb(kind === 'shade' ? mixa(c0, P.shade, 0.5) : kind === 'base' ? c0 : mixa(c0, P.light, 0.26 + 0.25 * (b.bump || 0) + 0.3 * (b.hump || 0)));
-      });
-    }
-    for (let i = 0; i < n; i++) { const b = samples[i]; const nextBrk = i === n - 1 || samples[i + 1].brk; if (b.brk && nextBrk) { ctx.fillStyle = rgb(colOf(b)); ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill(); } }
-    // 4e. dapples: irregular spots down the flanks (no even bands), one fill for all
-    const spots = new Path2D(), glows = P.glow ? new Path2D() : null;
+    // 4d. rounded body in ONE colour: shade (lower right) -> base -> light stripe (upper left), all opaque
+    const passes = [[0, 0, 1.0, rgb(P.shade)], [-0.1, -0.14, 0.8, rgb(body)], [-0.22, -0.3, 0.38, rgb(mixa(body, P.light, 0.55))]];
+    for (const [ox, oy, wk, col] of passes) strokeRuns(ctx, samples, n, ox, oy, (a, b) => Math.round((a.r + b.r) * wk), () => col);
+    for (let i = 0; i < n; i++) { const b = samples[i]; const nextBrk = i === n - 1 || samples[i + 1].brk; if (b.brk && nextBrk) { ctx.fillStyle = rgb(body); ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill(); } }
+    // 4e. one small pale dapple every 3 cells (just enough texture to show the body is moving)
+    const spots = new Path2D();
     for (let i = 2; i < n - 1; i++) {
       const p = samples[i], q = samples[i - 1]; if (p.brk) continue;
-      const seg = Math.floor(p.s * 1.25); if (seg === Math.floor(q.s * 1.25) || p.s < 0.95 || p.s > total - 0.7) continue;
-      const h = (seg * 2654435761) >>> 0, side = (h & 1) ? 1 : -1, offk = 0.4 + ((h >>> 3) % 4) * 0.06, rk = 0.2 + ((h >>> 7) % 4) * 0.05;
-      const sx = p.x - p.ty * side * p.r * offk, sy = p.y + p.tx * side * p.r * offk, sr = p.r * rk;
-      if (glows) { glows.moveTo(sx + sr * 1.9, sy); glows.arc(sx, sy, sr * 1.9, 0, TAU); }
-      const ra = Math.atan2(p.ty, p.tx);
-      spots.moveTo(sx + Math.cos(ra) * sr * 1.25, sy + Math.sin(ra) * sr * 1.25); spots.ellipse(sx, sy, sr * 1.25, sr, ra, 0, TAU);
-      if ((h >>> 11) % 3 === 0) { const s2 = sr * 0.55, qx = sx + p.tx * sr * 1.7, qy = sy + p.ty * sr * 1.7; spots.moveTo(qx + s2, qy); spots.arc(qx, qy, s2, 0, TAU); }
+      const seg = Math.floor((p.s - 2) / 3); if (p.s < 2 || seg === Math.floor((q.s - 2) / 3) || p.s > total - 2) continue;
+      const side = seg & 1 ? 1 : -1, sx = p.x - p.ty * side * p.r * 0.35, sy = p.y + p.tx * side * p.r * 0.35, sr = p.r * 0.32;
+      spots.moveTo(sx + sr, sy); spots.arc(sx, sy, sr, 0, TAU);
     }
-    if (glows) { ctx.fillStyle = 'rgba(110,246,255,0.22)'; ctx.fill(glows); }
-    ctx.fillStyle = P.glow ? rgb(P.spot) : rgb(mixa(P.mid, P.spot, 0.75)).replace('rgb', 'rgba').replace(')', ',0.8)'); ctx.fill(spots);
-    // 4f. dorsal crest: leaf-shaped scutes down the spine, alternating sizes, shrinking to the tail (batched)
-    const crest = new Path2D(), shine = new Path2D();
-    for (let i = 2; i < n - 1; i++) {
-      const p = samples[i], q = samples[i - 1]; if (p.brk) continue;
-      const seg = Math.floor(p.s * 1.6); if (seg === Math.floor(q.s * 1.6) || p.s < 1.0 || p.s > total - 0.55) continue;
-      if (p.hump < 0.1 && p.s > 2.3 && p.s < total - 1.4 && total > 5) continue; // crest rides the humps
-      const fade = clamp((total - p.s) / 3.2, 0.35, 1), big = seg % 2 ? 0.78 : 1;
-      const sz = cell * 0.13 * big * fade * (1 + 0.25 * (p.bump || 0) + 0.55 * (p.hump || 0));
-      const ang = Math.atan2(p.ty, p.tx), wob = S.dead ? 0 : Math.sin(T * 5 - p.s * 1.3) * 0.12;
-      const qx = p.x - p.ty * cell * 0.02, qy = p.y + p.tx * cell * 0.02, ra = ang + wob, ca = Math.cos(ra), sa = Math.sin(ra);
-      crest.moveTo(qx + ca * sz * 1.15, qy + sa * sz * 1.15); crest.ellipse(qx, qy, sz * 1.15, sz * 0.8, ra, 0, TAU);
-      const hx = qx + ca * (-sz * 0.2) - sa * (-sz * 0.28), hy = qy + sa * (-sz * 0.2) + ca * (-sz * 0.28);
-      shine.moveTo(hx + ca * sz * 0.45, hy + sa * sz * 0.45); shine.ellipse(hx, hy, sz * 0.45, sz * 0.18, ra, 0, TAU);
-    }
-    ctx.fillStyle = P.crest; ctx.fill(crest); ctx.strokeStyle = P.crestD; ctx.lineWidth = Math.max(1, cell * 0.04); ctx.stroke(crest);
-    ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.fill(shine);
-    // golden skin: sparkles that run along the body
-    if (P.sparkle && n > 6) {
-      ctx.fillStyle = '#fff';
-      for (let k = 0; k < 3; k++) {
-        const u = ((T * 0.35 + k / 3) % 1), p = samples[Math.floor(u * (n - 1))], tw = Math.sin(u * Math.PI);
-        ctx.globalAlpha = tw * 0.9; star(ctx, p.x - p.ty * p.r * 0.35, p.y + p.tx * p.r * 0.35, cell * 0.14 * tw); ctx.globalAlpha = 1;
-      }
-    }
-    // 4g. tail fluke: two rounded lobes
+    ctx.fillStyle = rgb(mixa(body, P.light, 0.5)); ctx.fill(spots);
+    // 4f. tail fluke: two rounded lobes in the body colour
     if (n > 4) {
       const tp = samples[n - 1], tq = samples[Math.max(0, n - 4)];
-      const ang = Math.atan2(tp.y - tq.y, tp.x - tq.x), wag = S.dead ? 0 : Math.sin(T * 7) * 0.32, fs = cell * (0.8 + 0.2 * Math.min(1, total / 12));
+      const ang = Math.atan2(tp.y - tq.y, tp.x - tq.x), wag = S.dead ? 0 : Math.sin(T * 7) * 0.32, fs = cell * 0.78;
       ctx.save(); ctx.translate(tp.x, tp.y); ctx.rotate(ang + wag);
       ctx.beginPath(); ctx.moveTo(-fs * 0.08, 0);
       ctx.quadraticCurveTo(fs * 0.12, -fs * 0.1, fs * 0.36, -fs * 0.38); ctx.quadraticCurveTo(fs * 0.5, -fs * 0.42, fs * 0.5, -fs * 0.3);
       ctx.quadraticCurveTo(fs * 0.44, -fs * 0.08, fs * 0.3, 0);
       ctx.quadraticCurveTo(fs * 0.44, fs * 0.08, fs * 0.5, fs * 0.3); ctx.quadraticCurveTo(fs * 0.5, fs * 0.42, fs * 0.36, fs * 0.38);
       ctx.quadraticCurveTo(fs * 0.12, fs * 0.1, -fs * 0.08, 0); ctx.closePath();
-      const tg = ctx.createLinearGradient(0, 0, fs * 0.5, 0); tg.addColorStop(0, P.fin[1]); tg.addColorStop(1, P.fin[0]);
-      ctx.fillStyle = tg; ctx.fill(); ctx.strokeStyle = OUTLINE; ctx.lineWidth = ow * 0.85; ctx.stroke();
+      ctx.fillStyle = rgb(body); ctx.fill(); ctx.strokeStyle = OUTLINE; ctx.lineWidth = ow * 0.8; ctx.stroke();
       ctx.restore();
     }
     ctx.restore();
@@ -720,7 +595,7 @@
 
   function drawHead(ctx, x, y, S, cell) {
     const A = asset('champHead'), P = S.skin || SKINS.lake;
-    const ang = S.headAngle, c = cell * 1.16, pulse = S.pulse || 0, T = S.time, mood = S.dead ? 'dead' : (S.mood || '');
+    const ang = S.headAngle, c = cell * 1.06, pulse = S.pulse || 0, T = S.time, mood = S.dead ? 'dead' : (S.mood || '');
     // shadow
     if (!S.noShadow) { ctx.fillStyle = 'rgba(0,26,46,0.24)'; ctx.beginPath(); ctx.ellipse(x + cell * 0.12, y + cell * 0.2, c * 0.68, c * 0.6, ang, 0, TAU); ctx.fill(); }
     ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
@@ -757,8 +632,8 @@
     ctx.beginPath(); ctx.ellipse(sk.x, 0, sk.rx, sk.ry, 0, 0, TAU); ctx.fill();
     ctx.beginPath(); ctx.ellipse(sn.x, 0, sn.rx, sn.ry, 0, 0, TAU); ctx.fill();
     // crown freckles + brow shine
-    ctx.fillStyle = P.glow ? 'rgba(110,246,255,0.85)' : rgb(mixa(P.mid, P.spot, 0.8));
-    [[-c * 0.22, 0, 0.07], [-c * 0.12, -c * 0.13, 0.045], [-c * 0.12, c * 0.13, 0.045]].forEach(([fx, fy, fr]) => { ctx.beginPath(); ctx.arc(fx, fy, c * fr, 0, TAU); ctx.fill(); });
+    ctx.fillStyle = rgb(mixa(P.head, P.body, 0.45));
+    [[-c * 0.22, 0, 0.06], [-c * 0.12, -c * 0.13, 0.04], [-c * 0.12, c * 0.13, 0.04]].forEach(([fx, fy, fr]) => { ctx.beginPath(); ctx.arc(fx, fy, c * fr, 0, TAU); ctx.fill(); });
     ctx.fillStyle = 'rgba(255,255,230,0.32)'; ctx.beginPath(); ctx.ellipse(c * 0.22, -c * 0.34, c * 0.24, c * 0.065, -0.25, 0, TAU); ctx.fill();
     // cheeks (rosier when happy)
     ctx.fillStyle = P.cheek; const ck = mood === 'happy' ? 1.35 : 1;
@@ -844,5 +719,5 @@
     ctx.closePath(); ctx.fill();
   }
 
-  window.Art = { ASSETS, SKINS, drawIsleTree, drawNightStars, MOODS, drawMood, drawChampBadge, loadAssets, mulberry, buildWaterTile, drawWater, drawGlints, lakePath, buildShore, buildGridLayer, drawFish, drawPerch, drawRock, drawWhirl, drawSailboat, drawPaddler, drawChamp, star, clamp, lerp };
+  window.Art = { ASSETS, SKINS, drawIsleTree, MOODS, drawMood, shoreFor, drawChampBadge, loadAssets, mulberry, drawWater, lakePath, buildShore, buildGridLayer, drawFish, drawPerch, drawRock, drawWhirl, drawSailboat, drawPaddler, drawChamp, star, clamp, lerp };
 })();

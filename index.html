@@ -122,20 +122,26 @@
   </div>
 </section>
 
-<!-- Game over -->
+<!-- Game over: one number, one goal, one button. Everything else sits behind Details. -->
 <section id="over" class="screen hidden">
   <div class="card over">
-    <h2 id="ovTitle">Tangled!</h2>
-    <p id="ovMsg" class="msg"></p>
+    <h2 id="ovTitle" class="ov-word">Tangled!</h2>
     <div class="ov-score"><span id="ovScore">0</span></div>
     <div id="ovBest" class="ov-best"></div>
-    <div id="ovStats" class="ov-stats"></div>
-    <div id="ovUnlock" class="ov-unlock hidden"></div>
-    <div id="ovMedals" class="ov-medals hidden"></div>
-    <div id="ovNext" class="ov-next hidden"></div>
-    <div id="ovTasks" class="ov-tasks"></div>
+    <div id="ovGoal" class="ov-goal hidden"></div>
     <button id="btnAgain" class="btn primary huge">Swim again</button>
-    <button id="btnMenu2" class="btn">Change mode</button>
+    <div class="ov-row">
+      <button id="btnDetails" class="btn sm" aria-expanded="false">Details</button>
+      <button id="btnMenu2" class="btn sm">Change mode</button>
+    </div>
+    <div id="ovMore" class="ov-more hidden">
+      <p id="ovMsg" class="msg"></p>
+      <div id="ovStats" class="ov-stats"></div>
+      <div id="ovUnlock" class="ov-unlock hidden"></div>
+      <div id="ovMedals" class="ov-medals hidden"></div>
+      <div id="ovNext" class="ov-next hidden"></div>
+      <div id="ovTasks" class="ov-tasks"></div>
+    </div>
   </div>
 </section>
 

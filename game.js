@@ -14,9 +14,10 @@
 
   // ------------------------------------------------------------------ config
   const SPEEDS = {
-    chill:  { name: 'Chill',  base: 182, floor: 0.86, boat: 0.8, perch: 10 },
-    normal: { name: 'Normal', base: 140, floor: 0.80, boat: 1.0, perch: 8 },
-    fast:   { name: 'Fast',   base: 104, floor: 0.76, boat: 1.2, perch: 7 }
+    // step = base * (floor + (1 - floor) * exp(-eaten / k)): keeps tightening for the whole run, no hard knee
+    chill:  { name: 'Chill',  base: 180, floor: 0.70, k: 30, boat: 0.8, perch: 10 },
+    normal: { name: 'Normal', base: 140, floor: 0.62, k: 28, boat: 1.0, perch: 8 },
+    fast:   { name: 'Fast',   base: 106, floor: 0.66, k: 26, boat: 1.2, perch: 7 }
   };
   const MODES = [
     { id: 'classic', name: 'Classic',        unlock: 0,   blurb: "Eat fish. Grow long. Don't tangle." },
@@ -29,10 +30,15 @@
   const MODE_MOOD = { classic: 'day', school: 'morning', whirl: 'dusk', break: 'storm', traffic: 'summer' };
   const MODE_THEME = { classic: 'classic', school: 'school', whirl: 'whirl', break: 'break', traffic: 'traffic' };
   // Daily Lake medal targets per twist (always Normal speed)
-  const MEDALS = { classic: [200, 500, 900], school: [300, 800, 1400], whirl: [200, 500, 900], break: [170, 420, 780], traffic: [150, 380, 700], golden: [300, 750, 1300] };
+  // Targets tuned to measured play (2026-11-15 review): Silver about 1.2x a decent player's median run,
+  // Gold about 1.25x their best run in 30. Daily lakes have islands, so ~0.85x of the Normal targets.
+  const MEDALS = { classic: [770, 2210, 3740], school: [430, 1360, 2470], whirl: [680, 1870, 3660], break: [550, 1620, 3320], traffic: [510, 1530, 2720], golden: [900, 2600, 4300] };
   const MEDAL_NAMES = ['Bronze', 'Silver', 'Gold'];
+  const STREAK_CAP = 10; // the streak bonus stops growing here
+  // The game-over card comes in about 0.63 s after the hit (0.11 s hit-freeze + this); a tap skips the wait.
+  const OVER_AT = 0.52;
   // Per-mode medals (a mastery ladder in every mode); scaled by speed
-  const MODE_MEDALS = { classic: [300, 700, 1200], school: [400, 1000, 1800], whirl: [300, 700, 1200], break: [220, 520, 950], traffic: [200, 480, 900] };
+  const MODE_MEDALS = { classic: [900, 2600, 4400], school: [500, 1600, 2900], whirl: [800, 2200, 4300], break: [650, 1900, 3900], traffic: [600, 1800, 3200] };
   const SPEED_K = { chill: 0.8, normal: 1, fast: 1.3 };
   const modeTargets = (mode, speed) => (MODE_MEDALS[mode] || MODE_MEDALS.classic).map((v) => Math.round(v * (SPEED_K[speed] || 1) / 10) * 10);
   const modeMedal = (score, mode, speed) => { const t = modeTargets(mode, speed); return score >= t[2] ? 2 : score >= t[1] ? 1 : score >= t[0] ? 0 : -1; };
@@ -43,7 +49,7 @@
     maple:  { txt: 'Medals on 3 Daily Lakes', have: () => medalDays(), need: 3 },
     ice:    { txt: 'Grow to length 25', have: () => save.maxLen || 0, need: 25 },
     sunset: { txt: 'Finish all tasks on 2 days', have: () => save.taskDays || 0, need: 2 },
-    night:  { txt: 'Score 800 in one run', have: () => maxBest(), need: 800 },
+    night:  { txt: 'Score 1500 in one run', have: () => maxBest(), need: 1500 },
     gold:   { txt: 'Gold on a Daily Lake', have: () => goldDays(), need: 1 }
   };
   const MODE_ICONS = {
@@ -118,7 +124,7 @@
     len:     { t: (n) => 'Grow to length ' + n, n: [16, 22, 28] },
     perch:   { t: (n) => 'Catch ' + n + ' golden perch today', n: [2, 3, 4], day: true },
     fishDay: { t: (n) => 'Eat ' + n + ' fish today', n: [40, 60, 80], day: true },
-    score:   { t: (n) => 'Score ' + n + ' in one run', n: [250, 400, 600] },
+    score:   { t: (n) => 'Score ' + n + ' in one run', n: [500, 900, 1400] },
     daily:   { t: () => "Swim today's Daily Lake", n: [1], day: true },
     modes:   { t: (n) => 'Play ' + n + ' different modes today', n: [2, 3], day: true, need: 2 }
   };
@@ -164,7 +170,7 @@
   const pick = (arr) => arr[Math.floor(rand() * arr.length)];
 
   // ------------------------------------------------------------------ layout
-  const L = { W: 0, H: 0, dpr: 1, cell: 30, cols: 0, rows: 0, gx: 0, gy: 0, gw: 0, gh: 0, topH: 0, orient: '', lake: null, shore: null, gridLayer: null, glints: [] };
+  const L = { W: 0, H: 0, dpr: 1, cell: 30, cols: 0, rows: 0, gx: 0, gy: 0, gw: 0, gh: 0, topH: 0, orient: '', lake: null, shore: null, gridLayer: null };
   function insets() {
     const cs = getComputedStyle($('probe'));
     return { t: parseFloat(cs.paddingTop) || 0, r: parseFloat(cs.paddingRight) || 0, b: parseFloat(cs.paddingBottom) || 0, l: parseFloat(cs.paddingLeft) || 0 };
@@ -191,7 +197,6 @@
     L.lake = Art.lakePath(L, 11 + cols * 7 + rows);
     L.shore = Art.buildShore(L);
     L.gridLayer = Art.buildGridLayer(L);
-    if (!L.glints.length) { const r = Art.mulberry(99); for (let i = 0; i < 34; i++) L.glints.push({ x: r(), y: r(), sp: 0.8 + r() * 1.6, ph: r() * TAU, s: 3 + r() * 4 }); }
   }
   let layoutSize = { w: 0, h: 0, o: '' }, resizeTimer = 0, pendingLayout = false;
   const midSwim = () => G && !G.demo && (G.state === 'play' || G.state === 'ready' || G.state === 'dying');
@@ -264,7 +269,7 @@
     G = {
       mode, speed, demo: !!opts.demo, bot: !!opts.bot, cols, rows,
       snake, prevTail: { x: snake[3].x, y: snake[3].y }, tailBrk: false,
-      dir, queue: [], acc: 0, step: sp.base * (!opts.demo && save.plays <= 4 ? 1.5 : 1), grow: 0, tickN: 0, grace: null, tpDone: false, justTp: false,
+      dir, queue: [], acc: 0, step: sp.base, grow: 0, tickN: 0, grace: null, tpDone: false, justTp: false,
       state: 'ready', readyT: 0.7, wait: !opts.demo && save.plays < 2,
       time: 0, score: 0, shown: 0, eaten: 0, streak: 0, bestStreak: 0, sinceEat: 999, streakWin: mode === 'school' ? 12 : 16,
       mood: daily ? daily.mood : (opts.demo ? 'day' : MODE_MOOD[mode] || 'day'), dayCycle: !daily && !opts.demo && mode === 'classic', dayIdx: 0, golden: !!(daily && daily.twist === 'golden'), lastEatT: -9, medal: -1,
@@ -273,9 +278,10 @@
       bulges: [], ripples: [], parts: [], pops: [], fx: [],
       mouth: 0, blinkAt: 1.5 + rand() * 2, headAng: Math.atan2(dir.y, dir.x), pulse: 0, look: { x: 1, y: 0 },
       shake: 0, freeze: 0, dead: 0, deadT: 0, deadCause: '', lunge: null, overShown: false, flash: 0,
-      hintFish: !opts.demo && save.plays < 2, gentle: !opts.demo && save.plays <= 4, rippleT: 0, newBestShown: false, prevBest: getBest(mode, speed),
+      hintFish: !opts.demo && save.plays < 2, gentle: !opts.demo && save.plays < 2, rippleT: 0, newBestShown: false, prevBest: getBest(mode, speed),
       portalPulse: [-9, -9], daily
     };
+    G.step = stepFor(G);
     if (daily) G.prevBest = getDaily().best;
     if (!opts.demo) { save.plays++; writeSave(); G.unl0 = unlockedIds(); G.skin0 = SKIN_ORDER.filter(skinUnlocked); G.fish0 = save.fish || 0; }
     placeFirstFood();
@@ -329,7 +335,11 @@
     if (inB(x, y)) { g.foods.push(mkFood('fish', x, y)); g.hintDir = (x - h.x) * px + (y - h.y) * py > 0 ? (px || py) : -(px || py); g.hintSide = { x: Math.sign(x - h.x) * (d.y !== 0 ? 1 : 0) + 0, y: 0 }; }
     else spawnFood('fish');
   }
-  function mkFood(type, x, y) { return { type, x, y, born: G.time, ph: rand() * TAU, tint: rand() < 0.3, life: type === 'perch' ? SPEEDS[G.speed].perch : 0, pop: 0, seed: Math.floor(rand() * 999) }; }
+  function mkFood(type, x, y) {
+    // golden perch timer: one second shorter once the run is past 30 fish, so the dash for it is a real call
+    const life = type === 'perch' ? SPEEDS[G.speed].perch - (G.eaten >= 30 ? 1 : 0) : 0;
+    return { type, x, y, born: G.time, ph: rand() * TAU, face: rand() < 0.5 ? -1 : 1, life, life0: life, pop: 0, seed: Math.floor(rand() * 999) };
+  }
 
   function spawnFood(type) {
     const g = G, o = occ(), h = g.snake[0];
@@ -339,6 +349,7 @@
       const i = y * g.cols + x; if (o[i] !== 0) continue;
       if (!fl.seen[i]) continue;
       if (Math.abs(x - h.x) + Math.abs(y - h.y) < (type === 'perch' ? 4 : 3)) continue;
+      if (g.pops.some((p) => p.cxl != null && Math.abs(p.cxl - x) <= 2 && Math.abs(p.cyl - y) <= 2)) continue;
       if (g.mode === 'traffic' && laneBlocked(x, y)) continue;
       const edge = x === 0 || y === 0 || x === g.cols - 1 || y === g.rows - 1;
       const w = edge ? 0.4 : 1; cand.push([x, y, w]); tw += w;
@@ -455,7 +466,7 @@
         const along = b.axis === 'h' ? Math.abs(hp.x - bx) : Math.abs(hp.y - by), perp = b.axis === 'h' ? Math.abs(hp.y - by) : Math.abs(hp.x - bx);
         const hl = b.kind === 'sail' ? 1.0 : 0.72, hw = b.kind === 'sail' ? 0.3 : 0.2;
         if (along < hl + 0.22 && perp < hw + 0.24) { die('boat'); return; }
-        if (!b.shaved && along < hl + 0.5 && perp < 1.3) { b.shaved = true; g.score += 15; g.shown = g.score; updateHud(false, true); const hx = L.gx + hp.x * L.cell, hy = L.gy + hp.y * L.cell; popup(hx, hy - L.cell * 1.3, 'CLOSE SHAVE +15', '#ffd24a', 18); Snd.tick(1.2); buzz(8); }
+        if (!b.shaved && along < hl + 0.5 && perp < 1.3) { b.shaved = true; g.score += 15; g.shown = g.score; updateHud(false, true); banner('CLOSE SHAVE +15', 'gold'); Snd.tick(1.2); buzz(8); }
       }
     }
   }
@@ -489,9 +500,26 @@
     if (g.state === 'ready') { g.readyT = 0; }
     return true;
   }
-  // Turn forgiveness: a swipe that lands just after Champ left a cell re-routes the move that just
-  // started, as if the swipe had arrived a moment earlier. Only for a straight, safe, uneventful move.
-  const REWIND = 0.5;
+  // Turn forgiveness: a swipe that lands just after Champ left a cell can re-route the move that just
+  // started, as if the swipe had arrived a moment earlier. Only for a straight, safe, uneventful move,
+  // and only when that is clearly what the player meant: the swipe came very early in the glide (a), or
+  // turning back there lines Champ up with a fish and turning at the next cell would not (b), or turning
+  // at the next cell would be fatal while the previous cell is safe (c). Otherwise it queues as normal.
+  // Never rewind away from a fish: if turning at the next cell lines Champ up with one (and is safe) and
+  // turning at the previous cell does not, the swipe always waits for the next cell, however early it came.
+  const REWIND = 0.5, REWIND_EARLY = 0.18;
+  function rewindWanted(d) {
+    const g = G, f = g.acc / g.step;
+    if (f > REWIND) return false;
+    const s0 = g.snake[0], s1 = g.snake[1];
+    const lined = (x, y) => g.foods.some((fd) => d.x !== 0 ? (fd.y === y && (fd.x - x) * d.x > 0) : (fd.x === x && (fd.y - y) * d.y > 0));
+    const nextFatal = cellFatal(s0.x + d.x, s0.y + d.y, g.grow <= 0);
+    if (lined(s0.x, s0.y) && !lined(s1.x, s1.y) && !nextFatal) return false;
+    if (f < REWIND_EARLY) return true;
+    if (lined(s1.x, s1.y) && !lined(s0.x, s0.y)) return true;
+    if (nextFatal && !cellFatal(s1.x + d.x, s1.y + d.y, false)) return true;
+    return false;
+  }
   function rewindTurn(d) {
     const g = G;
     if (g.tickN === 0 || g.freeze > 0 || g.grace != null || g.acc > g.step * REWIND) return false;
@@ -503,6 +531,7 @@
     if (g.portals && g.portals.some((p) => (p.x === nx && p.y === ny) || (p.x === s0.x && p.y === s0.y))) return false;
     if (cellFatal(nx, ny, false)) return false;
     if (g.mode === 'traffic' && g.boats.length) return false; // boat timing is continuous; keep it simple
+    if (!rewindWanted(d)) return false;
     const t = clamp(g.acc / g.step, 0, 1);
     const oldX = lerp(cx(s1.x), cx(s0.x), t), oldY = lerp(cy(s1.y), cy(s0.y), t);
     s0.x = nx; s0.y = ny;
@@ -516,25 +545,55 @@
   }
   const ptrs = new Map();
   function canSteer() { return G && !G.demo && (G.state === 'play' || G.state === 'ready'); }
+  // A fresh tap during the death animation brings the card at once. The finger that skipped can't also
+  // press "Swim again" under it: that button ignores clicks until the finger lifts (plus a moment).
+  let againLock = 0, skipPtr = null;
   window.addEventListener('pointerdown', (e) => {
     Snd.unlock();
+    if (G && !G.demo && G.state === 'dying' && !G.overShown && performance.now() - (G.diedAt || 0) > 150) {
+      G.skipDeath = true; skipPtr = e.pointerId; againLock = Infinity; return;
+    }
     if (!canSteer()) return;
     if (e.target.closest && e.target.closest('button') && !e.target.closest('#hud')) return;
-    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, turned: false, at: 0 });
     if (G.state === 'ready' && G.wait) startPlay();
     try { cv.setPointerCapture && e.target === cv && cv.setPointerCapture(e.pointerId); } catch (err) {}
   }, { passive: true });
+  // Swipe reader. One flick = one turn:
+  //  - below the threshold nothing happens (and the anchor stays put, so slow drags still add up);
+  //  - a stroke along or against the way Champ is heading (or the last queued turn) can only mean its
+  //    sideways half: the anchor holds while the stroke grows, and it turns as soon as the sideways half
+  //    reaches the threshold and 60% of the along half (so a diagonal flick works at any touch rate);
+  //    only once the along half passes 1.7x the threshold with little sideways travel is the stroke
+  //    dropped and the anchor moved, so a thumb's return stroke can never build up into a turn;
+  //  - after a turn in the same touch, a second turn needs a longer, cleaner stroke (1.7x the threshold,
+  //    2:1 against the other axis) and 70 ms, so the natural hook at the end of a flick is not a turn.
+  const swipeTh = () => clamp(L.cell * 0.55, 16, 26);
+  function readSwipe(p, x, y, now) {
+    const g = G, dx = x - p.x, dy = y - p.y, th = swipeTh(), ax = Math.abs(dx), ay = Math.abs(dy);
+    if (ax < th && ay < th) return null;
+    const ref = g.queue.length ? g.queue[g.queue.length - 1] : g.dir;
+    let horiz = ax > ay;
+    if (horiz ? ref.x !== 0 : ref.y !== 0) { // dominant axis is the way Champ already goes (or its reverse)
+      const minor = horiz ? ay : ax, major = horiz ? ax : ay;
+      if (minor >= th && minor >= 0.6 * major) horiz = !horiz;
+      else { if (p.turned || major >= 1.7 * th) { p.x = x; p.y = y; } return null; } // after a turn: re-anchor at once, as the hook rule expects
+    }
+    const along = horiz ? ax : ay, cross = horiz ? ay : ax;
+    if (p.turned && (along < 1.7 * th || along < 2 * cross || now - p.at < 70)) return null;
+    return horiz ? (dx > 0 ? DIRS.right : DIRS.left) : (dy > 0 ? DIRS.down : DIRS.up);
+  }
   window.addEventListener('pointermove', (e) => {
     const p = ptrs.get(e.pointerId); if (!p || !canSteer()) return;
-    const dx = e.clientX - p.x, dy = e.clientY - p.y, th = clamp(L.cell * 0.55, 16, 26);
-    if (Math.abs(dx) < th && Math.abs(dy) < th) return;
-    const d = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? DIRS.right : DIRS.left) : (dy > 0 ? DIRS.down : DIRS.up);
-    steer(d); p.x = e.clientX; p.y = e.clientY;
+    const now = performance.now(), d = readSwipe(p, e.clientX, e.clientY, now);
+    if (!d) return;
+    if (steer(d)) { p.turned = true; p.at = now; }
+    p.x = e.clientX; p.y = e.clientY;
   }, { passive: true });
-  const endPtr = (e) => { ptrs.delete(e.pointerId); };
+  const endPtr = (e) => { ptrs.delete(e.pointerId); if (skipPtr === e.pointerId) { skipPtr = null; againLock = performance.now() + 300; } };
   window.addEventListener('pointerup', endPtr); window.addEventListener('pointercancel', endPtr);
   window.addEventListener('lostpointercapture', endPtr);
-  window.addEventListener('blur', () => ptrs.clear());
+  window.addEventListener('blur', () => { ptrs.clear(); if (skipPtr != null) { skipPtr = null; againLock = 0; } });
   window.addEventListener('contextmenu', (e) => e.preventDefault());
   window.addEventListener('dblclick', (e) => e.preventDefault());
   document.addEventListener('gesturestart', (e) => e.preventDefault());
@@ -570,7 +629,7 @@
     for (let i = 0; i < n; i++) { const c = g.snake[i]; if (c.x === nx && c.y === ny) { if (willPop && i === n - 1) return null; return 'self'; } }
     return null;
   }
-  function graceMs() { return clamp(G.step * 0.9, 90, 150); }
+  function graceMs() { return clamp(G.step * 0.8, 70, 130); }
 
   function tick() { // returns 'moved' | 'stall' | 'dead'
     const g = G;
@@ -621,8 +680,6 @@
     }
     g.tickN++; g.sinceEat++; g.rewOff = null;
     if (turned) g.lastTurnTick = g.tickN;
-    g.streakWin = Math.max(g.mode === 'school' ? 8 : 10, (g.mode === 'school' ? 12 : 16) - Math.floor(g.eaten / 6));
-    if (g.streak > 0 && g.sinceEat > g.streakWin) g.streak = 0;
     g.bulges.forEach((b) => { b.k++; });
     g.bulges = g.bulges.filter((b) => b.k - 1 < g.snake.length + 1);
     // cancel a pending rock under the head
@@ -630,20 +687,35 @@
     // eating
     const fi = g.foods.findIndex((f) => f.x === nx && f.y === ny);
     if (fi >= 0) eatFood(g.foods.splice(fi, 1)[0]);
+    // streak: the window was set when the fish appeared; it ends on the move the window runs out
+    else if (g.streak > 0 && g.sinceEat >= g.streakWin) { g.streakLost = { tickN: g.tickN, v: g.streak }; g.streak = 0; }
     return 'moved';
   }
+  // Streak window, set when a fish appears: the straight-line distance to it plus a little slack.
+  // A direct line always keeps the streak; a detour or a miss loses it. Never down to spawn luck.
+  function setStreakWin(hx, hy) {
+    const g = G, school = g.mode === 'school';
+    const slack = g.eaten <= 10 ? (school ? 6 : 10) : g.eaten <= 25 ? (school ? 5 : 8) : g.eaten <= 50 ? (school ? 4 : 6) : (school ? 3 : 4);
+    let near = 1e9;
+    for (const f of g.foods) if (f.type === 'fish') near = Math.min(near, Math.abs(f.x - hx) + Math.abs(f.y - hy));
+    if (near === 1e9) for (const f of g.foods) near = Math.min(near, Math.abs(f.x - hx) + Math.abs(f.y - hy));
+    g.streakWin = (near === 1e9 ? 12 : near) + slack;
+  }
 
-  function stepFor(g) { const sp = SPEEDS[g.speed]; return sp.base * Math.max(sp.floor, 1 - 0.0065 * g.eaten) * (g.gentle ? 1 + 0.5 * Math.max(0, 1 - g.eaten / 12) : 1); }
+  // Beginner ease: the first 2 runs start 1.2x slower and fade to normal over the first 6 fish.
+  function stepFor(g) { const sp = SPEEDS[g.speed]; return sp.base * (sp.floor + (1 - sp.floor) * Math.exp(-g.eaten / sp.k)) * (g.gentle ? 1 + 0.2 * Math.max(0, 1 - g.eaten / 6) : 1); }
   function eatFood(f) {
     const g = G;
+    if (g.streakLost && g.streakLost.tickN === g.tickN) g.streak = g.streakLost.v; // a forgiven (rewound) turn ate on the last move of the window
+    g.streakLost = null;
     g.streak = (g.sinceEat <= g.streakWin && g.streak > 0) ? g.streak + 1 : 1;
     g.sinceEat = 0; g.bestStreak = Math.max(g.bestStreak, g.streak);
-    const bonus = (g.mode === 'school' ? 3 : 5) * (Math.min(g.streak, 10) - 1);
+    const bonus = (g.mode === 'school' ? 3 : 5) * (Math.min(g.streak, STREAK_CAP) - 1);
     const snack = g.tpTick != null && g.tickN - g.tpTick <= 5;
     const pts = (f.type === 'perch' ? 50 : 10) * (snack ? 2 : 1) + bonus;
     if (snack) g.snackNow = true;
     g.score += pts; g.eaten++; if (!g.demo) save.fish++; if (f.type === 'perch') g.perchEaten = (g.perchEaten || 0) + 1;
-    g.grow += f.type === 'perch' && g.snake.length < g.cols * g.rows * 0.22 && flood(occ(), f.x, f.y, true).n > g.snake.length * 2 + 8 ? 2 : 1;
+    if (f.type !== 'perch') g.grow += 1; // the golden perch does not grow Champ: it sheds tail when it lands (eatFx)
     g.bulges.push({ k: 0, big: f.type === 'perch' });
     g.step = stepFor(g);
     g.eating.push({ f, tickN: g.tickN });
@@ -651,49 +723,71 @@
     g.hintFish = false;
     // mode follow-ups
     if (f.type === 'perch') { g.perchIn = g.golden ? rr(4, 7) : rr(11, 17); }
-    else if (g.mode === 'school') spawnFood('fish'); else spawnFood('fish');
+    else spawnFood('fish');
     if (g.mode === 'break') placeRock();
     if (g.mode === 'whirl' && g.eaten % 6 === 0) placePortals();
+    setStreakWin(f.x, f.y);
+  }
+  // Golden perch relief: Champ sheds up to 3 tail segments (never below length 4), with a puff at the tail.
+  function shedTail(n) {
+    const g = G, k = Math.min(n, g.snake.length - 4); if (k <= 0) return 0;
+    const cut = g.snake.splice(g.snake.length - k, k);
+    g.prevTail = { x: cut[0].x, y: cut[0].y };
+    const last = g.snake[g.snake.length - 1]; g.tailBrk = !!last.brk;
+    g.bulges = g.bulges.filter((b) => b.k - 1 < g.snake.length + 1);
+    cut.forEach((c, i) => { if (i % 2 === 0) burst(cx(c.x), cy(c.y), 'puff', 0); });
+    return k;
   }
   function eatFx(f, pts) {
     const g = G, x = cx(f.x), y = cy(f.y);
     g.eating = g.eating.filter((e) => e.f !== f);
+    if (f.type === 'perch') shedTail(3);
     g.pulse = 1.4; g.lastEatT = g.time; ripple(x, y, 1.1, 0.35, true);
     burst(x, y, f.type === 'perch' ? 'gold' : 'splash', 0);
     if (g.demo) return;
     Snd.eat(g.streak); if (f.type === 'perch') Snd.perch();
-    popup(x, y - L.cell * 1.0, '+' + pts, f.type === 'perch' ? '#ffd24a' : '#ffffff', f.type === 'perch' ? 30 : 24);
-    if (g.streak >= 2) popup(x, y - L.cell * 1.7, 'x' + g.streak, '#ff9a6b', 20);
-    if (g.snackNow) { g.snackNow = false; popup(x, y - L.cell * 2.4, 'WHIRL SNACK x2', '#d4b0ff', 18); }
-    // one banner per meal, most important wins
-    let ban = null;
-    let mile = null;
-    if (g.eaten % 10 === 0) { ban = mile = g.eaten + ' FISH!'; g.shake = Math.max(g.shake, 3); }
-    if (g.streak > 0 && g.streak % 5 === 0) { ban = g.streak + ' STREAK!'; g.shake = Math.max(g.shake, 4); }
-    if (f.type === 'perch') { ban = 'GOLDEN PERCH!'; g.shake = Math.max(g.shake, 5); g.freeze = Math.max(g.freeze, 0.06); }
+    // one small +N, behind Champ (never ahead of the head); a live streak shows in its colour
+    popAt(f, '+' + pts, f.type === 'perch' ? '#ffd24a' : g.streak >= 2 ? '#ffab85' : '#ffffff');
+    // one HUD banner per meal, most important wins (milestones and streak steps are left to the chime)
+    let ban = null, cls = '';
+    if (g.snackNow) { g.snackNow = false; ban = 'WHIRL SNACK x2'; cls = 'violet'; }
+    if (f.type === 'perch') {
+      g.shake = Math.max(g.shake, 5); g.freeze = Math.max(g.freeze, 0.06);
+      if (!save.perchTip) { save.perchTip = 1; writeSave(); ban = 'Golden perch: shed a little tail'; cls = 'gold'; }
+    }
     buzz(f.type === 'perch' ? [18, 30, 18] : 10);
     g.shown = g.score; updateHud(false, true);
-    if (!g.newBestShown && g.prevBest > 0 && g.score > g.prevBest) { g.newBestShown = true; popup(x, y - L.cell * 2.4, 'NEW BEST!', '#ffd24a', 26); Snd.best(); ban = 'NEW BEST!'; }
     const done = progressTasks({ eaten: g.eaten, streak: g.streak, len: g.snake.length + g.grow, score: g.score, perch: g.perchEaten || 0 });
-    if (done.length) { ban = 'TASK DONE!'; popup(x, y - L.cell * 3.1, taskText(done[0]), '#bff6ff', 17); setTimeout(() => Snd.unlockMode(), 200); g.tasksDone = (g.tasksDone || 0) + done.length; }
+    if (done.length) { ban = 'TASK DONE!'; cls = 'task'; setTimeout(() => Snd.unlockMode(), 200); g.tasksDone = (g.tasksDone || 0) + done.length; }
+    if (!g.newBestShown && g.prevBest > 0 && g.score > g.prevBest) { g.newBestShown = true; Snd.best(); ban = 'NEW BEST!'; cls = 'gold'; }
     let medalUp = -1;
     const curMedal = g.daily ? medalOf(g.score, g.daily.twist) : modeMedal(g.score, g.mode, g.speed);
     if (g.medal0 == null) g.medal0 = g.daily ? medalOf(getDaily().best, g.daily.twist) : modeMedal(g.prevBest, g.mode, g.speed);
-    if (true) { const m = curMedal; if (m > g.medal && m > g.medal0) { g.medal = m; medalUp = m; ban = MEDAL_NAMES[m].toUpperCase() + ' MEDAL!'; g.shake = Math.max(g.shake, 4); } }
-    if (ban) banner(ban, medalUp >= 0 ? 'medal m' + medalUp : '');
+    if (curMedal > g.medal && curMedal > g.medal0) { g.medal = curMedal; medalUp = curMedal; ban = MEDAL_NAMES[curMedal].toUpperCase() + ' MEDAL!'; cls = 'medal m' + curMedal; }
+    if (ban) banner(ban, cls);
     if (medalUp >= 0) setTimeout(() => Snd.medal(medalUp), 90);
-    else if (ban && ban === mile) setTimeout(() => Snd.milestone(), 120);
+    else if (g.eaten % 10 === 0) setTimeout(() => Snd.milestone(), 120);
+  }
+  // Score pop-up placement: two cells behind the head (drifting further back), or beside it when
+  // that would leave the lake; never over the head's 3x3 cells or a fish.
+  function popAt(f, text, col) {
+    const g = G, d = g.dir, px = -d.y, py = d.x;
+    const opts = [[-d.x * 2, -d.y * 2, -d.x, -d.y], [px * 2, py * 2, px, py], [-px * 2, -py * 2, -px, -py], [-d.x * 2 + px * 2, -d.y * 2 + py * 2, -d.x, -d.y]];
+    const fishNear = (x, y) => g.foods.some((o) => Math.abs(o.x - x) <= 1 && Math.abs(o.y - y) <= 1);
+    let o = opts.find((q) => inB(f.x + q[0], f.y + q[1]) && inB(f.x + q[0] + q[2], f.y + q[1] + q[3]) && !fishNear(f.x + q[0], f.y + q[1])) || opts.find((q) => inB(f.x + q[0], f.y + q[1]));
+    if (!o) return;
+    g.pops.push({ x: cx(f.x + o[0]), y: cy(f.y + o[1]), vx: o[2] * L.cell * 0.8, vy: o[3] * L.cell * 0.8, cxl: f.x + o[0], cyl: f.y + o[1], text, col, size: 16, age: 0, life: 0.5 });
   }
 
   function die(cause, d) {
     const g = G; if (g.state === 'dying' || g.state === 'over') return;
     if (g.demo) { restartDemoSoon(); g.state = 'over'; return; }
     g.frozenT = g.tickN === 0 ? 1 : clamp(g.acc / g.step, 0, 1);
-    g.state = 'dying'; g.deadCause = cause; g.deadT = 0; g.dead = 1;
+    g.state = 'dying'; g.deadCause = cause; g.deadT = 0; g.dead = 1; g.diedAt = performance.now();
     const dd = d || g.dir;
     g.lunge = cause === 'boat' ? null : { x: dd.x * 0.0, y: dd.y * 0.0, tx: dd.x, ty: dd.y };
     g.freeze = 0.11; g.shake = 9; g.flash = 1;
-    Snd.die(); buzz([40, 30, 60]); Snd.setMusicDuck(0.45); $('banner').classList.add('hidden');
+    Snd.die(); buzz([40, 30, 60]); Snd.setMusicDuck(0.45); $('banner').classList.add('hidden'); $('hud').classList.remove('ban');
     hideGhost();
     const p = headCellPos();
     burst(L.gx + p.x * L.cell + (g.lunge ? g.lunge.tx * L.cell * 0.4 : 0), L.gy + p.y * L.cell + (g.lunge ? g.lunge.ty * L.cell * 0.4 : 0), 'splash', 0);
@@ -717,7 +811,7 @@
       playUpdate(dt);
     } else if (g.state === 'dying') {
       g.deadT += dt;
-      if (g.deadT > 1.05 && !g.overShown) { g.overShown = true; showOver(); }
+      if ((g.deadT > OVER_AT || g.skipDeath) && !g.overShown) { g.overShown = true; showOver(); }
     }
   }
 
@@ -737,7 +831,7 @@
     if (g.tickN !== g.stockTick) {
       g.stockTick = g.tickN;
       const want = g.mode === 'school' ? schoolCount() : 1, have = g.foods.reduce((n, f) => n + (f.type === 'fish' ? 1 : 0), 0);
-      if (have < want) spawnFood('fish');
+      if (have < want && spawnFood('fish') && have === 0) setStreakWin(g.snake[0].x, g.snake[0].y);
     }
     // delayed arrival effects
     if (g.fx.length) {
@@ -745,8 +839,6 @@
       g.fx = g.fx.filter((e) => { if (e.tickN < g.tickN || (e.tickN === g.tickN && t >= e.frac)) { e.fn(); return false; } return true; });
     }
     // timers
-    g.rippleT -= dt;
-    if (g.rippleT <= 0) { g.rippleT = 0.13; const p = headCellPos(); ripple(L.gx + p.x * L.cell, L.gy + p.y * L.cell, 0.9, 0.55, false); }
     if (g.hintFish === false && g.hintDir) g.hintDir = 0;
     // perch
     const pf = g.foods.find((f) => f.type === 'perch');
@@ -765,7 +857,7 @@
         const h = g.snake[0];
         if (g.snake.some((c) => c.x === p.x && c.y === p.y) || g.foods.some((f) => f.x === p.x && f.y === p.y)) continue;
         g.rocks.push({ x: p.x, y: p.y, seed: p.seed, born: g.time });
-        burst(cx(p.x), cy(p.y), 'splash', 0); ripple(cx(p.x), cy(p.y), 1.6, 1, true); Snd.rock(); g.shake = Math.max(g.shake, 3.5); buzz(14);
+        burst(cx(p.x), cy(p.y), 'splash', 0); ripple(cx(p.x), cy(p.y), 1.6, 1, true); Snd.rock(); buzz(14);
         const cap = Math.max(7, Math.floor(g.cols * g.rows / 26));
         if (g.rocks.filter((k) => !k.isle).length > cap) { const oi = g.rocks.findIndex((k) => !k.isle), old = g.rocks.splice(oi, 1)[0]; g.sinking.push({ x: old.x, y: old.y, seed: old.seed, t: 0 }); }
         void h;
@@ -804,11 +896,11 @@
       if (d <= 3) ripple(cx(f.px), cy(f.py), 0.7, 0.5, true);
     }
   }
-  // ---- Classic: a day on the lake. Every 12 fish the light moves on: midday, golden hour, dusk, night.
-  const DAY_STEPS = [['day', ''], ['golden', 'GOLDEN HOUR'], ['dusk', 'DUSK'], ['night', 'NIGHT SWIM']];
+  // ---- Classic: a day on the lake. Every 12 fish the light on the shore moves on: midday, golden hour, dusk, night.
+  const DAY_STEPS = [['day'], ['golden'], ['dusk'], ['night']];
   function dayCycle() {
     const g = G, i = Math.min(3, Math.floor(g.eaten / 12));
-    if (i !== g.dayIdx) { g.dayIdx = i; g.mood = DAY_STEPS[i][0]; if (i > 0) { g.flash = Math.max(g.flash, 0.7); banner(DAY_STEPS[i][1], 'mood'); } }
+    if (i !== g.dayIdx) { g.dayIdx = i; g.mood = DAY_STEPS[i][0]; } // the shore's light just changes: no banner, no flash
   }
 
   // ------------------------------------------------------------------ fx
@@ -823,14 +915,13 @@
         P.push({ k: 'drop', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - c * 1.2, age: 0, life: rr(0.35, 0.7), s: rr(0.07, 0.15) * c, col: gold ? (i % 2 ? '#ffe27a' : '#fff4c2') : (i % 3 ? '#e8f8ff' : '#9fe3ff'), g: c * 9 });
       }
       for (let i = 0; i < 4; i++) { const a = rand() * TAU; P.push({ k: 'bub', x: x + Math.cos(a) * c * 0.3, y: y + Math.sin(a) * c * 0.3, vx: Math.cos(a) * c * 0.6, vy: Math.sin(a) * c * 0.6, age: 0, life: rr(0.5, 0.9), s: rr(0.05, 0.1) * c }); }
-      ripple(x, y, 1.5, 0.8, true); ripple(x, y, 2.4, 1.1, true);
+      ripple(x, y, 1.3, 0.7, true);
       if (gold) for (let i = 0; i < 8; i++) { const a = rand() * TAU, sp = c * rr(1, 3); P.push({ k: 'star', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, age: 0, life: rr(0.5, 0.9), s: rr(0.12, 0.22) * c, col: '#ffe27a' }); }
     } else if (kind === 'swirl') {
       const col = idx ? '#d4b0ff' : '#bff6ff';
       for (let i = 0; i < 14; i++) { const a = rand() * TAU, d = c * rr(0.2, 0.8); P.push({ k: 'swirl', x, y, a, d, age: 0, life: rr(0.5, 0.9), s: rr(0.05, 0.1) * c, col }); }
     }
   }
-  function popup(x, y, text, col, size) { G.pops.push({ x, y, text, col, size, age: 0, life: 0.95 }); }
   function updateFx(dt) {
     const g = G;
     for (let i = g.ripples.length - 1; i >= 0; i--) { g.ripples[i].age += dt; if (g.ripples[i].age > g.ripples[i].life) g.ripples.splice(i, 1); }
@@ -840,9 +931,21 @@
       if (p.k === 'drop' || p.k === 'bub' || p.k === 'star') { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 1 - 2.2 * dt; p.vy *= 1 - 2.2 * dt; if (p.k === 'drop') p.vy += (p.g || 0) * dt * 0.35; }
       else if (p.k === 'swirl') { p.a += dt * 7; p.d *= 1 - 1.4 * dt; }
     }
-    for (let i = g.pops.length - 1; i >= 0; i--) { g.pops[i].age += dt; if (g.pops[i].age > g.pops[i].life) g.pops.splice(i, 1); }
+    // a pop-up gives way the moment Champ's head comes near it: words never sit where you are steering
+    const hp = g.snake && g.snake.length ? headCellPos() : null;
+    for (let i = g.pops.length - 1; i >= 0; i--) {
+      const p = g.pops[i]; p.age += dt;
+      let near = false;
+      if (hp && p.cxl != null) {
+        const k = p.age / p.life, e = 1 - (1 - k) * (1 - k), px = (p.x + (p.vx || 0) * e - L.gx) / L.cell, py = (p.y + (p.vy || 0) * e - L.gy) / L.cell;
+        const hw = (p.text.length * 9 + 4) / 2 / L.cell, hh = 10 / L.cell, hx = Math.floor(hp.x), hy = Math.floor(hp.y);
+        const hit = (x0, y0, x1, y1) => px - hw < x1 && px + hw > x0 && py - hh < y1 && py + hh > y0;
+        near = hit(hx - 1, hy - 1, hx + 2, hy + 2) || g.foods.some((f) => hit(f.x, f.y, f.x + 1, f.y + 1));
+      }
+      if (p.age > p.life || near) g.pops.splice(i, 1);
+    }
     // fish pop-in
-    for (const f of g.foods) f.pop = Math.min(1, f.pop + dt * 3.2);
+    for (const f of g.foods) f.pop = Math.min(1, f.pop + dt / 0.12); // scale-in: 0.12 s, from 70% size
     for (const r of g.rocks) r.k = Math.min(1, (g.time - r.born) / 0.28);
   }
 
@@ -907,17 +1010,17 @@
     ctx.fillStyle = '#0b5a86'; ctx.fillRect(0, 0, L.W, L.H);
     ctx.save();
     if (g && g.shake > 0.2) ctx.translate((Math.random() - 0.5) * g.shake, (Math.random() - 0.5) * g.shake);
-    Art.drawWater(ctx, L, T, g ? g.mood : 'day');
+    const mood = g ? g.mood : 'day';
+    Art.drawWater(ctx, L, T, mood);
     ctx.drawImage(L.gridLayer, 0, 0, L.W, L.H);
-    if (g && g.mood === 'night') Art.drawNightStars(ctx, L, T, L.glints); else Art.drawGlints(ctx, L, T, L.glints);
     if (g) drawWorld(g);
-    ctx.drawImage(L.shore, 0, 0, L.W, L.H);
+    ctx.drawImage(Art.shoreFor(L, mood), 0, 0, L.W, L.H);
     // living foam line
     ctx.save(); ctx.lineJoin = 'round';
     ctx.strokeStyle = 'rgba(255,255,255,' + (0.16 + 0.08 * Math.sin(T * 1.7)) + ')'; ctx.lineWidth = c * 0.2; ctx.stroke(L.lake);
     ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = Math.max(1.5, c * 0.05); ctx.stroke(L.lake);
     ctx.restore();
-    if (g) Art.drawMood(ctx, L, T, g.mood);
+    Art.drawMood(ctx, L, T, mood);
     if (g) drawPopups(g);
     ctx.restore();
     // death dip + vignette
@@ -975,7 +1078,7 @@
     if (isles.length) {
       const has = (x, y) => isles.some((r) => r.x === x && r.y === y);
       ctx.save(); ctx.lineCap = 'round';
-      for (const [col, w] of [['#b99a5c', 1.08], ['#e8d398', 0.94], ['#7fbf5a', 0.66]]) {
+      for (const [col, w] of [['#8f7c52', 1.08], ['#bfa874', 0.94], ['#7b8487', 0.66]]) { // sand ring, grey rock centre
         ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = c * w;
         for (const r of isles) {
           const k = easeOutBack(clamp(r.k == null ? 1 : r.k, 0, 1)), x = cx(r.x), y = cy(r.y);
@@ -1041,23 +1144,22 @@
   }
 
   function drawFood(g, f, t, scaleOverride, posOverride) {
-    const c = L.cell, a = t * 0.9 + f.ph, big = f.type === 'perch';
-    const rad = c * (big ? 0.14 : 0.1);
+    const c = L.cell, big = f.type === 'perch';
     let bx = cx(f.x), by = cy(f.y);
     if (f.mk != null && f.mk < 1 && !posOverride) { const e = smooth(0, 1, f.mk); bx = lerp(cx(f.px), bx, e); by = lerp(cy(f.py), by, e); }
-    const x = posOverride ? posOverride.x : bx + Math.cos(a) * rad, y = posOverride ? posOverride.y : by + Math.sin(a) * rad;
-    const pop = scaleOverride != null ? scaleOverride : easeOutBack(clamp(f.pop, 0, 1));
+    // no spin: a fish faces one way and bobs 2 px; school fish face the way they swim
+    const x = posOverride ? posOverride.x : bx, y = posOverride ? posOverride.y : by + Math.sin(t * 2.4 + f.ph) * 2;
+    const pop = scaleOverride != null ? scaleOverride : 0.7 + 0.3 * easeOutBack(clamp(f.pop, 0, 1));
     if (pop <= 0.01) return;
-    const ang = f.mk != null && f.mk < 1 && f.dir ? Math.atan2(f.dir[1], f.dir[0]) : a + Math.PI / 2;
-    // ring ripple under it
-    const k = ((t + f.ph) * 0.8) % 1;
-    ctx.strokeStyle = 'rgba(255,255,255,' + (0.28 * (1 - k)) + ')'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(bx, by, c * (0.3 + 0.35 * k), c * (0.28 + 0.3 * k), 0, 0, TAU); ctx.stroke();
+    let ang = 0, flip = f.face || 1;
+    if (f.dir) { if (f.dir[0]) flip = f.dir[0]; else { ang = f.dir[1] * Math.PI / 2; flip = 1; } }
     ctx.save(); ctx.translate(x, y); ctx.scale(pop, pop); ctx.translate(-x, -y);
-    if (big) Art.drawPerch(ctx, x, y, c * 1.0, ang, t * 10 + f.ph, clamp(f.life / SPEEDS[g.speed].perch, 0, 1), t);
-    else Art.drawFish(ctx, x, y, c * 0.78, ang, t * 11 + f.ph, f.tint);
+    // soft disc behind it so it reads on every water colour
+    ctx.fillStyle = big ? 'rgba(255,214,60,0.22)' : 'rgba(255,255,255,0.18)'; ctx.beginPath(); ctx.arc(x, y, c * (big ? 0.62 : 0.55), 0, TAU); ctx.fill();
+    if (big) Art.drawPerch(ctx, x, y, c * 1.15, ang, flip, clamp(f.life / (f.life0 || SPEEDS[g.speed].perch), 0, 1), t);
+    else Art.drawFish(ctx, x, y, c * 1.0, ang, flip);
     ctx.restore();
   }
-
   function drawPart(p) {
     const k = p.age / p.life, a = 1 - k;
     if (p.k === 'drop') { ctx.fillStyle = p.col; ctx.globalAlpha = a; ctx.beginPath(); ctx.arc(p.x, p.y, p.s * (1 - k * 0.5), 0, TAU); ctx.fill(); ctx.globalAlpha = 1; }
@@ -1068,11 +1170,11 @@
   function drawPopups(g) {
     ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
     for (const p of g.pops) {
-      const k = p.age / p.life, y = p.y - k * L.cell * 1.4, s = p.size * (k < 0.15 ? 0.6 + k / 0.15 * 0.55 : 1.15 - Math.min(0.15, (k - 0.15) * 0.3));
-      ctx.globalAlpha = k > 0.7 ? 1 - (k - 0.7) / 0.3 : 1;
+      const k = p.age / p.life, e = 1 - (1 - k) * (1 - k), x = p.x + (p.vx || 0) * e, y = p.y + (p.vy || 0) * e, s = p.size * (k < 0.15 ? 0.7 + k / 0.15 * 0.3 : 1);
+      ctx.globalAlpha = k > 0.6 ? 1 - (k - 0.6) / 0.4 : 1;
       ctx.font = '400 ' + s + 'px "Lilita One", "Trebuchet MS", sans-serif';
-      ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(4,34,52,0.85)'; ctx.strokeText(p.text, clamp(p.x, 30, L.W - 30), y);
-      ctx.fillStyle = p.col; ctx.fillText(p.text, clamp(p.x, 30, L.W - 30), y);
+      ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(4,34,52,0.85)'; ctx.strokeText(p.text, x, y);
+      ctx.fillStyle = p.col; ctx.fillText(p.text, x, y);
     }
     ctx.restore();
   }
@@ -1081,7 +1183,7 @@
   // Face: happy right after a meal, worried when the next move would be fatal.
   function champMood(g) {
     if (g.dead) return '';
-    if (g.time - g.lastEatT < 0.42) return 'happy';
+    if (g.time - g.lastEatT < 0.18) return 'happy'; // short, so the white eyes are almost always showing
     if (g.demo || g.state !== 'play') return '';
     const h = g.snake[0], d = g.queue.length ? g.queue[0] : g.dir;
     if (g.grace != null || (cellFatal(h.x + d.x, h.y + d.y, g.grow <= 0) && g.acc > g.step * 0.25)) { g.worried = 1; return 'worry'; }
@@ -1164,15 +1266,16 @@
   }
   function updateStreakHud(force) {
     const g = G, el = $('streak'); if (!g || g.demo) return;
-    const on = g.streak >= 2 && g.sinceEat <= g.streakWin;
-    if (on) { $('stx').textContent = 'x' + g.streak; el.style.setProperty('--p', (1 - g.sinceEat / g.streakWin).toFixed(3)); }
+    const on = g.streak >= 2 && g.sinceEat < g.streakWin;
+    // the bonus stops growing at x10 (STREAK_CAP): from there the ring turns gold and reads MAX
+    if (on) { const mx = g.streak >= STREAK_CAP; $('stx').textContent = mx ? 'MAX' : 'x' + g.streak; el.classList.toggle('max', mx); el.style.setProperty('--p', clamp(1 - g.sinceEat / g.streakWin, 0, 1).toFixed(3)); }
     if (el.classList.contains('off') === on) { el.classList.toggle('off', !on); if (on) { el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop'); } }
     void force;
   }
   let bannerTimer = 0;
   function banner(text, cls) {
-    const b = $('banner'); b.textContent = text; b.className = cls || ''; void b.offsetWidth; b.classList.add('show');
-    clearTimeout(bannerTimer); bannerTimer = setTimeout(() => b.classList.add('hidden'), 1050);
+    const b = $('banner'); b.textContent = text; b.className = cls || ''; void b.offsetWidth; b.classList.add('show'); $('hud').classList.add('ban');
+    clearTimeout(bannerTimer); bannerTimer = setTimeout(() => { b.classList.add('hidden'); $('hud').classList.remove('ban'); }, 900);
   }
   function buzz(p) { try { if (G && G.demo) return; if (navigator.vibrate && (!navigator.userActivation || navigator.userActivation.hasBeenActive)) navigator.vibrate(p); } catch (e) {} }
 
@@ -1269,74 +1372,79 @@
     if (newSkins.length) save.seen.skin = 'new';
     writeSave();
     const info = DEATH[g.deadCause] || DEATH.self;
-    $('ovTitle').textContent = info.t; $('ovMsg').textContent = pick(info.m);
+    $('ovTitle').textContent = info.t;
     const ob = $('ovBest'), best = Math.max(prevBest, g.score), fresh = isNew && g.score > 0;
+    const modeName = (MODES.find((m) => m.id === g.mode) || {}).name;
     ob.classList.remove('new', 'close');
     let bestText;
-    if (fresh && prevBest === 0 && !g.daily) bestText = 'First score in ' + (MODES.find((m) => m.id === g.mode) || {}).name + '!';
+    if (fresh && prevBest === 0 && !g.daily) bestText = 'First score in ' + modeName + '!';
     else if (fresh) bestText = g.daily ? 'NEW BEST TODAY!' : 'NEW BEST!';
     else if (g.score > 0 && g.score === prevBest) { bestText = 'Tied your best!'; ob.classList.add('close'); }
-    else if (g.score > 0 && best > 0 && g.score >= best * 0.7) { bestText = 'So close! ' + (best - g.score) + ' short of ' + best; ob.classList.add('close'); }
+    else if (g.score > 0 && best > 0 && g.score >= best * 0.7) { bestText = (best - g.score) + ' short of your best (' + best + ')'; ob.classList.add('close'); }
     else bestText = (g.daily ? "Today's best " : 'Best ') + best;
     ob.textContent = bestText;
+    // ---- exactly one "next goal" row: news first, then the closest thing to chase
+    const goal = $('ovGoal'); let gHtml = '', gNews = false, gPct = null;
+    const medalI = (i) => '<i class="gi mdot m' + i + '"></i>';
+    const tg = g.daily ? (MEDALS[g.daily.twist] || MEDALS.classic) : modeTargets(g.mode, g.speed);
+    const have = g.daily ? rec.s : best, mNow = g.daily ? rec.m : modeMedal(best, g.mode, g.speed), mWas = g.daily ? prevMedal : modeMedal(prevBest, g.mode, g.speed);
+    const nextMode = MODES.find((m) => !isUnlocked(m));
+    const T0 = getTasks(), ti = T0.done.findIndex((d) => !d);
+    if (newly.length) { gNews = true; gHtml = '<i class="gi">&#9733;</i><span class="gt"><span>New lake: <b>' + newly.map((m) => m.name).join(', ') + '</b>!</span></span>'; }
+    else if (newSkins.length) { gNews = true; gHtml = '<i class="gi">&#9733;</i><span class="gt"><span>New look for Champ: <b>' + newSkins.map((id) => Art.SKINS[id].name).join(', ') + '</b>!</span></span>'; }
+    else if (mNow > mWas && mNow >= 0) { gNews = true; gHtml = medalI(mNow) + '<span class="gt"><span><b>' + MEDAL_NAMES[mNow] + '</b> ' + (g.daily ? 'on today’s lake' : 'in ' + modeName) + '!</span></span>'; }
+    else if (mNow < 2) { const k = mNow + 1; gPct = clamp(have / tg[k], 0, 1); gHtml = medalI(k) + '<span class="gt"><span><b>' + (tg[k] - have) + '</b> more for ' + MEDAL_NAMES[k] + (g.daily ? ' today' : ' in ' + modeName) + '</span><span class="gb"><i></i></span></span>'; }
+    else if (nextMode) { const hv = save.fish || 0; gPct = clamp(hv / nextMode.fish, 0, 1); gHtml = '<i class="gi">&#128031;</i><span class="gt"><span><b>' + (nextMode.fish - hv) + '</b> more fish for ' + nextMode.name + '</span><span class="gb"><i></i></span></span>'; }
+    else if (ti >= 0) { const p = T0.picks[ti], v = Math.min(T0.prog[p.id] || 0, p.n); gPct = v / p.n; gHtml = '<i class="gi">&#10003;</i><span class="gt"><span>' + taskText(p) + ' <b>' + v + '/' + p.n + '</b></span><span class="gb"><i></i></span></span>'; }
+    goal.innerHTML = gHtml; goal.className = 'ov-goal' + (gNews ? ' news' : '') + (gHtml ? '' : ' hidden');
+    if (gPct != null) setTimeout(() => { const i = goal.querySelector('.gb i'); if (i) i.style.width = Math.round(gPct * 100) + '%'; }, 260);
+    if (newly.length || newSkins.length) setTimeout(() => Snd.unlockMode(), 350);
+    else if (mNow > mWas && mNow >= 0) setTimeout(() => Snd.medal(mNow), 500);
+    // ---- details (folded away)
+    $('ovMsg').textContent = pick(info.m);
     const stats = [[g.snake.length, 'length'], [g.eaten, 'fish']];
-    if (g.bestStreak >= 2) stats.push(['x' + g.bestStreak, 'streak']);
+    if (g.bestStreak >= 2) stats.push(['x' + g.bestStreak, 'best streak']);
     $('ovStats').innerHTML = stats.map((x) => '<div><b>' + x[0] + '</b>' + x[1] + '</div>').join('');
-    const un = $('ovUnlock'), lines = [];
-    if (newly.length) lines.push('Unlocked: ' + newly.map((m) => m.name).join(', ') + '!');
-    if (newSkins.length) lines.push('New look for Champ: ' + newSkins.map((id) => Art.SKINS[id].name).join(', ') + '!');
-    if (lines.length) { un.innerHTML = lines.join('<br>'); un.classList.remove('hidden'); setTimeout(() => Snd.unlockMode(), 350); }
-    else un.classList.add('hidden');
-    // what to chase next
-    const nx = $('ovNext'); nx.className = 'ov-next';
+    $('ovUnlock').classList.add('hidden');
+    const nx = $('ovNext'); nx.className = 'ov-next hidden';
     if (g.daily) {
-      const tg = MEDALS[g.daily.twist] || MEDALS.classic, m = rec.m;
-      const medals = tg.map((v, i) => '<div class="md m' + i + (rec.s >= v ? ' on' : '') + (i > prevMedal && i <= m ? ' got' : '') + '"><i></i><span>' + v + '</span></div>').join('');
-      const msg = m >= 2 ? 'Gold today! Perfect lake.' : (tg[m + 1] - rec.s) + ' more today for <b>' + MEDAL_NAMES[m + 1] + '</b>';
       let week = '';
       for (let i = -6; i <= 0; i++) {
         const k = shiftKey(g.daily.key, i), r = save.dlog[k], p = k.split('-').map(Number), dn = 'SMTWTFS'[new Date(p[0], p[1] - 1, p[2]).getDay()];
         week += '<div class="wd' + (i === 0 ? ' today' : '') + '"><i class="' + (r ? (r.m >= 0 ? 'm' + r.m : 'played') : '') + '"></i><span>' + dn + '</span></div>';
       }
-      nx.innerHTML = '<div class="medals">' + medals + '</div><div class="nx-t">' + msg + '</div><div class="week">' + week + '</div>' +
-        '<div class="nx-s">' + (dayStreak >= 2 ? 'Day ' + dayStreak + ' streak! ' : '') + 'A new lake every day</div>';
+      nx.innerHTML = '<div class="week">' + week + '</div><div class="nx-s">' + (dayStreak >= 2 ? 'Day ' + dayStreak + ' streak! ' : '') + 'A new lake every day</div>';
       nx.classList.add('daily'); nx.classList.remove('hidden');
-    } else {
-      const next = MODES.find((m) => !isUnlocked(m));
-      if (next && !newly.length) {
-        const have = save.fish || 0, p0 = Math.round(clamp((g.fish0 || 0) / next.fish, 0, 1) * 100), pct = Math.round(clamp(have / next.fish, 0, 1) * 100);
-        nx.innerHTML = '<div class="nx-t">' + (next.fish - have) + ' more fish for <b>' + next.name + '</b></div><div class="nx-bar"><i style="width:' + p0 + '%"></i><em>+' + g.eaten + '</em></div>';
-        nx.classList.remove('hidden');
-        setTimeout(() => { const i = nx.querySelector('i'); if (i) i.style.width = pct + '%'; }, 450);
-      } else {
-        // everything open: point at the next look for Champ
-        const nk = SKIN_ORDER.find((id) => !skinUnlocked(id));
-        if (nk && !newSkins.length) {
-          const sg = SKIN_GOAL[nk], pct = Math.round(clamp(sg.have() / sg.need, 0, 1) * 100);
-          nx.innerHTML = '<div class="nx-t">Next look: <b>' + Art.SKINS[nk].name + '</b> &middot; ' + sg.txt + '</div><div class="nx-bar"><i style="width:0%"></i></div>';
-          nx.classList.remove('hidden');
-          setTimeout(() => { const i = nx.querySelector('i'); if (i) i.style.width = pct + '%'; }, 450);
-        } else nx.classList.add('hidden');
-      }
+    } else if (nextMode) {
+      nx.innerHTML = '<div class="nx-t">' + ((nextMode.fish - (save.fish || 0))) + ' more fish for <b>' + nextMode.name + '</b></div>'; nx.classList.remove('hidden');
     }
     $('ovTasks').innerHTML = tasksHtml(true);
     const om = $('ovMedals');
-    if (!g.daily) {
-      const tg = modeTargets(g.mode, g.speed), bm = modeMedal(best, g.mode, g.speed), pm = modeMedal(prevBest, g.mode, g.speed);
-      om.innerHTML = '<div class="medals sm">' + tg.map((v, i) => '<div class="md m' + i + (best >= v ? ' on' : '') + (i > pm && i <= bm ? ' got' : '') + '"><i></i><span>' + v + '</span></div>').join('') + '</div>' +
-        '<div class="nx-s">' + (bm >= 2 ? 'Gold in ' + MODES.find((m) => m.id === g.mode).name + '!' : (tg[bm + 1] - best) + ' more for ' + MEDAL_NAMES[bm + 1] + ' in ' + MODES.find((m) => m.id === g.mode).name + ' (' + SPEEDS[g.speed].name + ')') + '</div>';
-      om.classList.remove('hidden');
-      if (bm > pm && bm >= 0) setTimeout(() => Snd.medal(bm), 700);
-    } else om.classList.add('hidden');
-    hide('hud'); show('over'); applyPendingLayout();
+    om.innerHTML = '<div class="medals sm">' + tg.map((v, i) => '<div class="md m' + i + (have >= v ? ' on' : '') + '"><i></i><span>' + v + '</span></div>').join('') + '</div>';
+    om.classList.remove('hidden');
+    setDetails(false);
+    hide('hud'); show('over'); applyPendingLayout(); placeOverCard();
     countUp($('ovScore'), g.score, () => { if (fresh) { ob.classList.add('new'); if (!newly.length && !newSkins.length) Snd.best(); } });
+  }
+  function setDetails(open) {
+    $('ovMore').classList.toggle('hidden', !open); $('btnDetails').setAttribute('aria-expanded', open ? 'true' : 'false'); $('btnDetails').textContent = open ? 'Hide details' : 'Details';
+    const card = document.querySelector('.card.over'); card.classList.toggle('open', open);
+    if (open) { const H = window.innerHeight, cr = card.getBoundingClientRect(), mt = parseFloat(card.style.marginTop) || 0, over = cr.bottom - (H - 10); if (over > 0) card.style.marginTop = Math.max(0, mt - over) + 'px'; }
+    else if (!$('over').classList.contains('hidden')) placeOverCard();
+  }
+  // Put "Swim again" where the thumb rests: its centre at about 67% of the screen height.
+  function placeOverCard() {
+    const card = document.querySelector('.card.over'), btn = $('btnAgain'); card.style.marginTop = '0px';
+    const H = window.innerHeight, cr = card.getBoundingClientRect(), br = btn.getBoundingClientRect();
+    const above = br.top + br.height / 2 - cr.top, top = clamp(H * 0.67 - above, 6, Math.max(6, H - (cr.height) - 6));
+    card.style.marginTop = Math.max(0, top - cr.top) + 'px';
   }
   let countRaf = 0;
   function countUp(el, to, done) {
     cancelAnimationFrame(countRaf);
     el.textContent = '0';
     if (to <= 0) { done && done(); return; }
-    const t0 = performance.now() + 180, dur = Math.min(900, 320 + to * 2.2), steps = Math.min(14, Math.max(4, Math.round(to / 10)));
+    const t0 = performance.now() + 40, dur = Math.min(440, 220 + to * 0.6), steps = Math.min(10, Math.max(4, Math.round(to / 10)));
     let lastStep = -1;
     const f = (now) => {
       const k = clamp((now - t0) / dur, 0, 1), e = 1 - Math.pow(1 - k, 3), v = Math.round(to * e), st = Math.floor(e * steps);
@@ -1391,6 +1499,7 @@
     const T0 = getTasks(), n = T0.done.filter(Boolean).length, el = $('taskChip');
     el.innerHTML = '<span class="dots">' + T0.done.map((d) => '<i class="' + (d ? 'on' : '') + '"></i>').join('') + '</span>' + (n === 3 ? "All of today's tasks done!" : "Today's tasks " + n + '/3') + '<span class="chev">&rsaquo;</span>';
     el.classList.toggle('all', n === 3);
+    el.classList.toggle('hidden', (save.plays || 0) < 3); // a new player sees logo, Play and modes only
   }
   function openTasks() { Snd.unlock(); Snd.click(); $('taskList').innerHTML = tasksHtml(false); $('taskReward').textContent = 'Finish all three today: a task star (' + (save.taskDays || 0) + ' so far). 2 stars unlock the Sunset look.'; show('tasks'); }
 
@@ -1436,8 +1545,9 @@
     $('taskChip').addEventListener('click', openTasks);
     $('btnTasksDone').addEventListener('click', () => { hide('tasks'); startRun(); });
     $('btnSkinsDone').addEventListener('click', () => { Snd.back(); hide('skins'); renderTitle(); });
-    $('btnAgain').addEventListener('click', startRun);
+    $('btnAgain').addEventListener('click', () => { if (performance.now() < againLock) return; startRun(); });
     $('btnMenu2').addEventListener('click', () => { Snd.back(); goTitle(); });
+    $('btnDetails').addEventListener('click', () => { Snd.click(); setDetails($('ovMore').classList.contains('hidden')); });
     $('btnMenu').addEventListener('click', () => { Snd.back(); goTitle(); });
     $('btnRestart').addEventListener('click', startRun);
     $('btnResume').addEventListener('click', resumeGame);
